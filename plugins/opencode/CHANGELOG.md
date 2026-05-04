@@ -2,6 +2,50 @@
 
 All notable changes to the opencode plugin are documented here.
 
+## 0.3.0 — Review session continuity
+
+Implemented per `docs/plans/002-review-session-continuity.md`. Plan converged after 13 rounds of Codex review + 8 rounds of opencode/deepseek-v4-pro review, including a round-6 design pivot that dropped layered stale-lock-reclamation defenses in favour of a pure mkdir-EEXIST primitive with manual-rm recovery (auto-reclamation queued for plan 004).
+
+### Added
+- Per-`(plan-or-branch, role, model)` opencode session continuity. Successive `/opencode:review` and `/opencode:run` invocations on the same plan/branch resume the prior opencode session via `--session <id>`, so reviewers/runs build on prior reasoning across rounds.
+- Rule-based session-key derivation (no LLM in the dispatch path): `feature/plan-NNN-*` → `plan-NNN`; other branches → `branch-<sanitised-branch-name>`; non-git → `scratch`. Sanitisation: lowercase + `[a-z0-9-]+` collapse + dash trim.
+- `--session-key <name>` flag — override the rule (e.g., bridge across branches; scope ad-hoc work on `main`).
+- `--reset` flag — delete the stored session-id before dispatch, run fresh, save the new id. Recovery primitive for confused reviewer sessions.
+- `--no-session` flag — skip reuse for THIS call without deletion (one-off detached question that doesn't pollute the running thread).
+- All three flags work on both `/opencode:review` and `/opencode:run`.
+- `lib/sessions.mjs` — session-id storage CRUD with atomic `.tmp+rename` writes, key derivation, and the simplified mkdir-EEXIST advisory lock primitive.
+- `lib/session-capture.mjs` — three capture mechanisms: `verifySessionExists` (pre-flight via `opencode session list --format json`), `captureSessionIdFromStderr` (PRIMARY post-run capture from opencode's `service=session id=ses_...` log line; deterministic per-process), `captureLatestSessionForCwd` (FALLBACK only when stderr parse fails; cwd-realpath-filtered).
+- `lib/review-dispatch.mjs` — high-level `dispatchOpencode({...})` composes pre-flight + lock acquisition + invocation + capture + save. Lock contention triggers degraded mode (fresh + no save) rather than corrupting continuity. Stale-session detection in stderr triggers automatic retry without `--session`.
+- D-010 architecture decision: review session continuity is per-`(plan-or-branch, role, model)`, with mkdir-EEXIST locking and manual-rm recovery for stranded locks.
+
+### Changed
+- `runReview` and `runRun` (foreground) route through `dispatchOpencode`. `runRunBackground` implements the same contract across the parent-supervisor boundary: parent does pre-flight + lock acquisition; supervisor (in a separate process) owns capture + save + lock release at close. Same defenses (pre-flight, stale-stderr detection, --no-session save gate) apply uniformly.
+- Background path: parent (`runRunBackground`) acquires the lock + verifies the session BEFORE spawning the supervisor. Parent registers `supervisor.once("error" | "spawn")` for the lock-handoff so spawn-time failures don't strand the lock; on success ownership transfers to the supervisor.
+- Supervisor argv extends from 4 positionals to 9 (`jobId, projectDir, binary, cwd, role, sessionKey, model, noSession, degraded, ...opencodeArgs`). Supervisor restructured per ESM ordering: top-level static built-in imports, single unified `uncaughtException` handler (replaces v0.2.0's separate handler — does lock release + job-record-failed + supervisor-error breadcrumb in one place), then dynamic `await import(...)` for own modules. The unified crash handler dodges the dual-handler race that left jobs stuck `running` on supervisor crash.
+- `invokeOpencodeRaw` now threads `stderr` and `exit_code` on EVERY resolution path (success, non-zero exit, child error, timeout). Empty-text → `ok:true` with empty body (was `ok:false`); the dispatcher's stale-session detection uses this to recognise opencode's silent stale-session failure mode (exit 0 + empty body + `Session not found` in stderr).
+- `parseReviewArgs` and `parseRunArgs` accept `--session-key`, `--reset`, `--no-session`. `--reset` and `--no-session` are mutually exclusive (rejected with exit 2).
+
+### Test counts
+- Plan 001 baseline: 152 tests.
+- Plan 002 adds: 51 (+32 sessions.test.mjs + 11 session-capture.test.mjs + 8 review-dispatch.test.mjs).
+- v0.3.0: **203 tests**, 200 pass, 3 e2e skipped.
+
+### Architecture decisions recorded
+- **D-010** — review session continuity is per-(plan-or-branch, role, model); rule-based key derivation; pure mkdir-EEXIST advisory lock with manual-rm recovery (auto-reclaim queued for plan 004).
+
+### Known limitations
+- **No auto-reclamation of stranded locks.** A dispatch that crashes without releasing the lock requires manual `rm -rf <path>.lock`. The error message on the next acquisition includes the exact recovery command. Auto-reclaim queued for plan 004 with proper `flock(2)` semantics.
+- **Capture fallback under same-cwd-different-tuple races** (e.g., parallel `/opencode:review` + `/opencode:run`): when stderr capture fails (only happens if opencode's log format changes), the session-list-cwd-filtered fallback can pick the wrong session. Stderr capture is primary precisely because it's deterministic per-process; this is a fallback-only edge case.
+- **macOS case-insensitive realpath comparison** in `captureLatestSessionForCwd` is best-effort. Pathological mixed-case symlink chains are out of scope for v0.3.0.
+- **Background supervisor module-load gap**: if the supervisor process forks successfully but throws during ESM module evaluation BEFORE its `uncaughtException` handler registers, the lock is stranded. The handler is registered as early as possible (top of supervisor.mjs after built-in static imports), so the window is microseconds — but documented for transparency.
+
+### Deferred to future plans
+- `/opencode:sessions` slash command (list + clear) — plan 004+ (purely ergonomics).
+- `--fork` flag (branch from current state into a new session) — plan 004+.
+- Auto-prune of stale `.session-id` files older than N days — plan 004+.
+- Proper `flock(2)`-backed lock primitives with auto-reclamation — plan 004 (replaces the current best-effort mkdir-EEXIST + manual-rm recovery).
+- Adversarial-review + Stop-hook review gate + macOS-parity for cancel/TOCTOU + flock-based serialization — plan 003 (renumbered from former plan-002 slot, since plan 002 was reclaimed for session continuity).
+
 ## 0.2.0 — Write-capable run + background tasks + local install
 
 Implemented per `docs/plans/001-opencode-run-and-background.md`. Plan converged after 6 dual-review rounds (Codex + opencode/deepseek-v4-pro per D-004's plan-review pipeline); 14 unique BLOCKERS, ~30 SHOULD-FIX, ~12 NICE-TO-HAVE addressed before approval. Branch then passed the three-reviewer code-review gate (Codex + opencode/deepseek-v4-flash + opencode/glm-5.1) with all Must Fix and Should Fix items resolved before this release.

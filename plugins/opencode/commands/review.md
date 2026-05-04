@@ -1,6 +1,6 @@
 ---
 description: Run an opencode code review against local git state (foreground only in v1)
-argument-hint: '[--scope auto|working-tree|branch] [--base <ref>] [--model <provider/model>]'
+argument-hint: '[--scope auto|working-tree|branch] [--base <ref>] [--model <provider/model>] [--session-key <name>] [--reset] [--no-session]'
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
@@ -60,4 +60,11 @@ Output handling:
 
 Argument handling:
 - Preserve the user's arguments exactly (apart from injecting the model picker's choice).
-- The script accepts `--scope`, `--base`, and `--model`. Unknown flags or unexpected positional arguments are rejected with exit 2 and a clear error message — surface that error to the user verbatim.
+- The script accepts `--scope`, `--base`, `--model`, `--session-key`, `--reset`, and `--no-session`. Unknown flags or unexpected positional arguments are rejected with exit 2 and a clear error message — surface that error to the user verbatim.
+
+Session continuity (v0.3.0+):
+- By default, this command **resumes the prior opencode session** scoped to `(plan-or-branch, role=review, model)`. Successive review rounds on the same plan share the reviewer's prior reasoning.
+- The session key is derived from the current git branch: `feature/plan-NNN-*` → `plan-NNN`; other branches → `branch-<sanitised>`; non-git → `scratch`.
+- Pass `--session-key <name>` to override the rule (useful for ad-hoc reviews on `main` — e.g., `--session-key auth-refactor`).
+- Pass `--reset` to discard the stored session-id and start fresh (recovery primitive when a reviewer's session gets confused or hits context limits).
+- Pass `--no-session` for a one-off detached question that does NOT touch the running thread (skips reuse and skips save).

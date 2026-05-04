@@ -68,24 +68,27 @@ export function invokeOpencodeRaw({
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.on("error", (err) => {
       clearTimeout(timer);
-      resolveResult({ ok: false, error: `failed to invoke opencode: ${err.message}` });
+      resolveResult({ ok: false, error: `failed to invoke opencode: ${err.message}`, stderr, exit_code: null });
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
       if (timedOut) {
-        resolveResult({ ok: false, error: `opencode timed out after ${timeoutMs} ms (signal ${signal ?? "?"})\nstderr: ${stderr}`, exit_code: code });
+        resolveResult({ ok: false, error: `opencode timed out after ${timeoutMs} ms (signal ${signal ?? "?"})\nstderr: ${stderr}`, stderr, exit_code: code });
         return;
       }
       if (code !== 0) {
-        resolveResult({ ok: false, error: `opencode exited with code ${code}\nstderr: ${stderr}`, exit_code: code });
+        resolveResult({ ok: false, error: `opencode exited with code ${code}\nstderr: ${stderr}`, stderr, exit_code: code });
         return;
       }
       const messages = parseEvents(stdout);
       if (messages.length === 0) {
-        resolveResult({ ok: false, error: `opencode produced no assistant text events\nstdout: ${stdout}`, exit_code: code });
+        // Empty-text → ok:true with empty body. Plan 002 dispatcher uses
+        // staleSessionInStderr() on the stderr to decide if this is a
+        // recoverable stale-session situation (silent opencode failure mode).
+        resolveResult({ ok: true, text: "", stderr, exit_code: code });
         return;
       }
-      resolveResult({ ok: true, text: messages[messages.length - 1] });
+      resolveResult({ ok: true, text: messages[messages.length - 1], stderr, exit_code: code });
     });
   });
 }

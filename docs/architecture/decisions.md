@@ -92,6 +92,29 @@ Why: aligns with the workspace name (`claudecode-buddy`) and the state-dir conve
 
 Plan 001 renames the existing `plugins/opencode/scripts/opencode-companion.mjs` to `plugins/opencode/scripts/buddy.mjs` and updates all references (slash commands, subagents, skill, tests, docs). All future plugins adopt the same name from the start.
 
+## D-010 — Review session continuity is per-(plan-or-branch, role, model)
+
+**Decided in:** plan 002 (`docs/plans/002-review-session-continuity.md`).
+
+opencode session-ids are persisted at `<project>/.claudecode-buddy/opencode/sessions/<key>-<role>-<model>.session-id` and reused on subsequent dispatches.
+Key derivation is rule-based (no LLM): `feature/plan-NNN-*` → `plan-NNN`; other branches → `branch-<sanitised-branch-name>`; non-git → `scratch`.
+`--session-key <name>` overrides; `--reset` deletes the stored id; `--no-session` skips reuse for one call without deletion.
+
+The dispatcher (`lib/review-dispatch.mjs`) runs three defenses against silent stale-session failure modes:
+1. **Pre-flight verification** via `opencode session list --format json` before passing `--session <id>`.
+2. **Stderr-backup detection** (`Session not found: <id>`) handles the race window between pre-flight and run.
+3. **Advisory mkdir-EEXIST lock** per (key, role, model) tuple serialises the load → invoke → save critical section. Lock contention causes the dispatcher to run in degraded mode (fresh + no save) instead of corrupting continuity.
+
+Why: review rounds and run sessions benefit from prior-reasoning continuity, but only when scoped narrowly.
+A single global session would leak unrelated work across reviews; a per-invocation fresh session loses the value of "the reviewer remembers what they said last round."
+The (plan-or-branch, role, model) tuple captures the natural unit of "same conversation thread continuing."
+
+Why pre-flight + stderr backup (not just one): opencode treats `--session <stale-id>` as a silent failure (exit 0 + empty body + `Session not found` in stderr only). Pre-flight catches the common case cheaply; stderr backup handles the race where the session is deleted between pre-flight and the run.
+
+Why mkdir-EEXIST (not flock): mkdir is portable (works on macOS without coreutils) and atomic on POSIX. The simplified primitive has zero racing surface — only one process can succeed per (key, role, model) tuple.
+
+**Known limitation (v0.3.0): no auto-reclamation of stranded locks.** A dispatch that crashes without releasing leaves a stranded lock until manually `rm`'d. The error message on the next acquisition includes the exact `rm -rf <path>` command. Auto-reclamation queued for plan 004 via proper `flock(2)` or `fcntl(F_SETLK)` semantics. Plan 002 rounds 3-6 attempted layered defenses against 3-party stale-reclamation races (rename-based atomic claim → post-rename stat verification → owner-token files with verify-after-write); each layer closed one race window and exposed a subtler one. The simpler design — drop reclamation, document manual recovery — has zero racing surface and ships in v0.3.0.
+
 ---
 
 ## How to add a decision

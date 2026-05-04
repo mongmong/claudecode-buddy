@@ -23,7 +23,7 @@ TASK_FILE="$PROMPT_DIR/task.txt"
 cat > "$TASK_FILE" <<'OPENCODE_PROMPT_DELIMITER_DO_NOT_USE_IN_PROMPT_xK7p2qR9_END'
 <orchestrator's full task description — any content, including $variables, backticks, quotes>
 OPENCODE_PROMPT_DELIMITER_DO_NOT_USE_IN_PROMPT_xK7p2qR9_END
-node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" run --task-file "$TASK_FILE" [--model "<provider/model>"] [--yolo] [--background]
+node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" run --task-file "$TASK_FILE" [--model "<provider/model>"] [--yolo] [--background] [--session-key "<name>"] [--reset] [--no-session]
 RC=$?
 rm -rf "$PROMPT_DIR"
 exit $RC
@@ -38,6 +38,13 @@ Background mode (--background):
 
 - Companion returns immediately with `Started job <id>` and the job runs detached. Subagent surfaces the job-id verbatim. Orchestrator polls `/opencode:status <id>` for completion (or uses the `status` companion subcommand directly).
 - `--background` REQUIRES `--yolo` (background runs cannot answer interactive prompts).
+
+Session continuity (v0.3.0+):
+
+- By default, this subagent's invocations resume the prior opencode session for `(plan-or-branch, role=run, model)` — useful for "continue prior coding context" iterations within a plan's lifecycle.
+- Pass `--session-key "<name>"` to override the auto-derived key (e.g., bridge across branches).
+- Pass `--reset` to discard the stored session-id (fresh session this call + replace the stored id).
+- Pass `--no-session` for a one-off task that shouldn't pollute the running thread (skips reuse + skips save).
 
 Output:
 
