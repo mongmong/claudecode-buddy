@@ -198,9 +198,14 @@ Follow `docs/code-review.md` for the review process. Key points:
 
 ## Coding Agent
 
-**Claude Opus is the primary coding agent.** All implementation, debugging, refactoring, and coding tasks should be done by Claude (Opus model) — either directly or via subagents. Use the `superpowers:subagent-driven-development` skill for multi-task plan execution.
+**Claude is the primary coding agent.** Model selection within Claude follows a two-tier rule:
 
-Codex and opencode are *secondary* agents. Codex remains review-only in this workspace. opencode became write-capable in plan 001 via `/opencode:run` — Claude (Opus) remains the primary coding agent and opencode is a *secondary* agent for delegated coding work where the user wants a different model's perspective on writing the code. Use `/opencode:run --yolo` (with explicit user consent) for auto-approve, or `/opencode:run` (no `--yolo`) to keep opencode's permission prompts in the loop in interactive contexts.
+- **Sonnet — default for general coding tasks.** Routine implementation, straightforward refactors, applying review findings, writing tests against an existing pattern, doc/CHANGELOG updates, file renames, mechanical fixes, and any task where the approach is already settled. Sonnet is faster and cheaper; use it whenever the task is well-scoped.
+- **Opus — reserved for complex coding tasks.** Multi-file architectural changes, ambiguous problem framing, debugging deep failures across subsystems, plan-level work requiring trade-off judgment, novel concurrency / security / supervisor-style logic, or tasks where Sonnet has stalled or produced incorrect results. Switch to Opus when the task genuinely needs the deeper reasoning budget.
+
+Default to Sonnet; promote to Opus only when complexity warrants it. The user may pin a model with `/model` at any time — respect that override. Use the `superpowers:subagent-driven-development` skill for multi-task plan execution regardless of which Claude model is driving.
+
+Codex and opencode are *secondary* agents. Codex remains review-only in this workspace. opencode became write-capable in plan 001 via `/opencode:run` — Claude remains the primary coding agent and opencode is a *secondary* agent for delegated coding work where the user wants a different model's perspective on writing the code. Use `/opencode:run --yolo` (with explicit user consent) for auto-approve, or `/opencode:run` (no `--yolo`) to keep opencode's permission prompts in the loop in interactive contexts.
 
 ## Codex (GPT-5.5) — Review Only
 
@@ -213,7 +218,7 @@ Codex and opencode are *secondary* agents. Codex remains review-only in this wor
 
 Codex provides an independent second-model perspective (GPT-5.5) that catches issues Claude may miss. Codex review is non-optional for plans (alongside opencode); strongly recommended for everything else.
 
-Do NOT use Codex for implementation, debugging, refactoring, or any coding work. Those belong to Claude Opus.
+Do NOT use Codex for implementation, debugging, refactoring, or any coding work. Those belong to Claude (Sonnet for general tasks, Opus for complex ones — see "Coding Agent" above).
 
 ## Opencode
 
@@ -233,7 +238,7 @@ The pinned models give Plan reviews and Code reviews each a deliberate, reproduc
 
 Until plan 000 ships, opencode is invoked via the CLI: `opencode run --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool. After plan 000 ships, prefer `/opencode:review` for interactive use and `Agent({subagent_type: "opencode:opencode-review"})` for programmatic dispatch (e.g., the dual plan-review gate).
 
-Until plan 001 ships, opencode is review-only by capability — do not delegate coding tasks to it. After plan 001 ships, opencode-rescue can take write-capable tasks; Claude (Opus) remains the *primary* coding agent and opencode is a *secondary* agent for selective rescue.
+Until plan 001 ships, opencode is review-only by capability — do not delegate coding tasks to it. After plan 001 ships, opencode-run can take write-capable tasks; Claude remains the *primary* coding agent (Sonnet by default, Opus for complex tasks — see "Coding Agent" above) and opencode is a *secondary* agent for selective delegation.
 
 - **Plan review (BLOCKING — see "Plan review gate" above)** — every plan must pass an opencode review *in addition to* the Codex review before any code is written. Capture the verdict in the plan's `## Opencode review summary` section.
 - **Code review** — run opencode alongside `/codex:review` for branch-level review before PRs.
