@@ -97,11 +97,16 @@ Expected: a list including the files above. (`docs/specs/opencode-plugin.md` and
 
 - [ ] **Step 2: Apply the rename to all matches except docs/**
 
-Run:
+Run TWO sed passes — first the `.mjs` path references, then the bare `opencode-companion` string (e.g., in the companion's own usage-string output). The second pass is broader so it must NOT touch docs/.
 
 ```bash
 for f in $(grep -rln "opencode-companion\.mjs" plugins/opencode tests/opencode); do
   sed -i 's|opencode-companion\.mjs|buddy.mjs|g' "$f"
+done
+for f in $(grep -rln "opencode-companion" plugins/opencode tests/opencode); do
+  # After the first pass, only bare "opencode-companion" references remain.
+  # Most are in usage strings; replace with "buddy".
+  sed -i 's|opencode-companion|buddy|g' "$f"
 done
 ```
 
@@ -1031,6 +1036,8 @@ In `plugins/opencode/scripts/buddy.mjs`, add the imports:
 ```javascript
 import { execFileSync, spawn } from "node:child_process";
 import { openSync, closeSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createJob, updateJob, jobsDir, jobPath, JOB_ID_RE } from "./lib/jobs.mjs";
 ```
 
@@ -1332,7 +1339,7 @@ Update the usage string:
 
 ```javascript
 process.stderr.write(
-  `Unknown subcommand: ${subcommand ?? "(none)"}.\nUsage: opencode-companion <setup|models|review|prompt|run|status|result|cancel> [args...]\n`,
+  `Unknown subcommand: ${subcommand ?? "(none)"}.\nUsage: buddy <setup|models|review|prompt|run|status|result|cancel> [args...]\n`,
 );
 ```
 
@@ -1604,28 +1611,30 @@ child.on("error", (err) => {
 });
 
 child.on("close", (code, signal) => {
-  // R2-1: Drain stdoutBuf — if opencode's last event didn't end with \n
-  // (process killed mid-write, or a final partial line), parse what's left
-  // BEFORE updating the final state. Otherwise the last assistant text delta
-  // is silently dropped.
-  const tail = stdoutBuf.trim();
-  if (tail) {
-    try {
-      const ev = JSON.parse(tail);
-      if (ev.type === "text" && ev.part?.type === "text" && typeof ev.part?.text === "string") {
-        const id = ev.part.messageID ?? "_unknown_";
-        if (!buffers.has(id)) buffers.set(id, { text: "", lastIdx: 0 });
-        const entry = buffers.get(id);
-        entry.text += ev.part.text;
-        entry.lastIdx = idx++;
-        const sorted = [...buffers.values()].sort((a, b) => a.lastIdx - b.lastIdx);
-        const finalText = sorted.length > 0 ? sorted[sorted.length - 1].text : "";
-        writeFileSync(stdoutPath, finalText);
-      }
-      appendFileSync(eventsPath, tail + "\n");
-    } catch {
-      // Truly garbled trailing content — skip silently. The events file already
-      // has whatever was streamed before the partial.
+  // R3-1: Drain stdoutBuf line-by-line. The buffer may contain MULTIPLE
+  // complete events plus a trailing partial — parsing the whole buffer as one
+  // JSON object would discard the complete events along with the partial. Use
+  // the same line-by-line logic the streaming `data` handler uses.
+  // R3-6: Do NOT re-append to eventsPath here — the streaming handler already
+  // wrote the raw bytes. Only update the parsed-text stdoutPath.
+  if (stdoutBuf.length > 0) {
+    const lines = stdoutBuf.split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let ev;
+      try { ev = JSON.parse(trimmed); } catch { continue; }
+      if (ev.type !== "text") continue;
+      if (!ev.part || ev.part.type !== "text" || typeof ev.part.text !== "string") continue;
+      const id = ev.part.messageID ?? "_unknown_";
+      if (!buffers.has(id)) buffers.set(id, { text: "", lastIdx: 0 });
+      const entry = buffers.get(id);
+      entry.text += ev.part.text;
+      entry.lastIdx = idx++;
+    }
+    if (buffers.size > 0) {
+      const sorted = [...buffers.values()].sort((a, b) => a.lastIdx - b.lastIdx);
+      writeFileSync(stdoutPath, sorted[sorted.length - 1].text);
     }
     stdoutBuf = "";
   }
@@ -1667,7 +1676,9 @@ function runRunBackground(args, cwd, projectDir, cli) {
   if (args.model) opencodeArgs.push("--model", args.model);
   opencodeArgs.push(args.task);
 
-  const supervisorPath = join(import.meta.dirname, "lib", "supervisor.mjs");
+  // R3-2: import.meta.dirname needs Node 20.11; package.json declares >=18.18.
+  // Use fileURLToPath + dirname which works in Node 18+.
+  const supervisorPath = join(dirname(fileURLToPath(import.meta.url)), "lib", "supervisor.mjs");
 
   // Spawn supervisor detached (own process group). stdio ignore — the supervisor
   // writes its own files to <jobs>/<id>.{stdout,stderr,events,supervisor-error}.
@@ -2231,6 +2242,16 @@ function runCancel(rawArgs) {
     );
     process.exit(0);
   }
+  // R3-3: warn the user on macOS that the kill is best-effort (no /proc cmdline
+  // verification means we could in theory hit a recycled PID).
+  if (process.platform !== "linux") {
+    process.stdout.write(
+      `WARNING: macOS cancel uses best-effort PID match (no /proc cmdline). ` +
+      `If pid ${job.pid} was recycled by an unrelated process since the supervisor ` +
+      `started, that unrelated process will receive SIGTERM. macOS-specific ` +
+      `verification via 'ps -o command=' is tracked for plan 002.\n`,
+    );
+  }
   // Kill the entire process group (negative pgid) so opencode dies too.
   try { process.kill(-job.pgid, "SIGTERM"); } catch {}
   // Escalate to SIGKILL after 2 seconds if any group member still alive.
@@ -2773,12 +2794,15 @@ if (!list.ok) {
 let errored = false;
 for (const j of list.value) {
   if (j.status === "running") {
-    // CAS: only mark session-ended if the job is still running. If the job
-    // completed in the gap between listJobs and updateJob, leave it alone.
+    // R3-5: Best-effort serialization. The expectedStatus check reduces the
+    // race window between SessionEnd and a supervisor's close-time update,
+    // but does NOT eliminate it: both can read "running", both pass the check,
+    // last writer wins. Worst case: a job that actually completed gets stamped
+    // "session-ended" — recoverable (the user can read <id>.events to see what
+    // really happened) but misleading. True flock-based serialization is
+    // tracked for plan 002.
     const r = updateJob(projectDir, j.id, { status: "session-ended" }, { expectedStatus: "running" });
     if (!r.ok && !/status changed/i.test(r.error)) {
-      // A "status changed" rejection is fine (job completed concurrently).
-      // Anything else is a real failure — surface it.
       process.stderr.write(`session-end: failed to update job ${j.id}: ${r.error}\n`);
       errored = true;
     }
@@ -2880,40 +2904,51 @@ mkdir -p "${MARKETPLACE_PLUGINS}"
 MARKETPLACE_JSON="${MARKETPLACE_ROOT}/.claude-plugin/marketplace.json"
 mkdir -p "${MARKETPLACE_ROOT}/.claude-plugin"
 
-# R2-11: Build the marketplace JSON safely. We REQUIRE jq (Node would also work
-# but adds a dependency footgun); refuse to proceed without it because
-# string-interpolating plugin descriptions/versions into JSON is unsafe (quotes,
-# backslashes, newlines in those fields would corrupt the manifest).
-if ! command -v jq >/dev/null 2>&1; then
-  echo "ERROR: jq is required to build marketplace.json safely. Install jq and re-run." >&2
-  echo "  Debian/Ubuntu: apt install jq" >&2
-  echo "  macOS:         brew install jq" >&2
-  exit 1
-fi
+# R3-4: Use Node (already required by package.json engines) instead of jq for
+# safe JSON construction. JSON.parse + JSON.stringify handle every edge case
+# (quotes, backslashes, newlines, unicode) without any external dependency.
+node --input-type=module -e "
+import { readFileSync, readdirSync, writeFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 
-# Build a JSON array of plugin entries, one per workspace plugin manifest.
-plugins_json='[]'
-for plugin_dir in "${WORKSPACE_DIR}/plugins"/*/; do
-  plugin_name="$(basename "${plugin_dir%/}")"
-  manifest="${plugin_dir%/}/.claude-plugin/plugin.json"
-  if [ ! -f "${manifest}" ]; then
-    echo "WARNING: ${plugin_name} has no .claude-plugin/plugin.json — skipping" >&2
-    continue
-  fi
-  # jq -n with --arg/--slurpfile to safely escape any value (quotes, backslashes,
-  # newlines, unicode, etc.).
-  entry=$(jq -n \
-    --arg name "${plugin_name}" \
-    --arg src  "./plugins/${plugin_name}" \
-    --slurpfile m "${manifest}" \
-    '{name: $name, description: ($m[0].description // "(no description)"), version: ($m[0].version // "0.0.0"), author: {name: "claudecode-buddy"}, source: $src}')
-  plugins_json=$(jq -n --argjson cur "${plugins_json}" --argjson new "${entry}" '$cur + [$new]')
-done
+const workspaceDir = process.argv[2];
+const out = process.argv[3];
+const pluginsRoot = join(workspaceDir, 'plugins');
+const plugins = [];
 
-jq -n \
-  --argjson plugins "${plugins_json}" \
-  '{name: "claudecode-buddy-local", owner: {name: "claudecode-buddy"}, metadata: {description: "Local-only marketplace for claudecode-buddy plugins under development.", version: "0.1.0"}, plugins: $plugins}' \
-  > "${MARKETPLACE_JSON}"
+for (const name of readdirSync(pluginsRoot)) {
+  const dir = join(pluginsRoot, name);
+  if (!statSync(dir).isDirectory()) continue;
+  const manifestPath = join(dir, '.claude-plugin', 'plugin.json');
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch (err) {
+    console.error(\`WARNING: \${name} has no readable .claude-plugin/plugin.json (\${err.message}) — skipping\`);
+    continue;
+  }
+  plugins.push({
+    name,
+    description: manifest.description ?? '(no description)',
+    version: manifest.version ?? '0.0.0',
+    author: { name: 'claudecode-buddy' },
+    source: \`./plugins/\${name}\`,
+  });
+}
+
+const marketplace = {
+  name: 'claudecode-buddy-local',
+  owner: { name: 'claudecode-buddy' },
+  metadata: {
+    description: 'Local-only marketplace for claudecode-buddy plugins under development.',
+    version: '0.1.0',
+  },
+  plugins,
+};
+
+writeFileSync(out, JSON.stringify(marketplace, null, 2) + '\n');
+" "${WORKSPACE_DIR}" "${MARKETPLACE_JSON}"
+
 echo "Wrote ${MARKETPLACE_JSON}"
 
 # Symlink each plugin under plugins/. SAFETY: refuse to clobber non-symlinks.
@@ -3341,6 +3376,51 @@ R2-15. `[FIXED]` Unused `jobPath` import in supervisor. (deepseek) → Removed.
 R2-16. `[FIXED]` Self-review step at Phase 3 still references the old "watcher" pattern. (glm) → Updated to reflect supervisor.
 R2-17. `[FIXED]` Spec shows `stdout_path`/`stderr_path` as relative paths; plan stores absolute. (glm) → Spec updated to match implementation (absolute).
 
+### Round 3 — 2026-05-04
+
+**Codex verdict:** NEEDS-REVISION (1 BLOCKER, 3 SHOULD-FIX, 1 NICE-TO-HAVE)
+**opencode/deepseek-v4-pro verdict:** NEEDS-REVISION (1 BLOCKER, 2 NICE-TO-HAVE)
+**opencode/glm-5.1 verdict:** APPROVE with suggestions (2 SHOULD-FIX, 2 NICE-TO-HAVE — first APPROVE in plan 001)
+
+Round 3 used `--format default` instead of `--format json` (lesson from R2 dispatch noise — thinking events were polluting stdout). Output is clean human-readable text.
+
+**Consolidated unique BLOCKERS (2):**
+
+R3-1. `[FIXED]` Multi-line tail drain in supervisor — `JSON.parse(stdoutBuf.trim())` treats the whole buffer as ONE JSON object, discarding any complete events that landed before the partial. (Codex)
+   → Resolution: supervisor close handler now splits `stdoutBuf` by `\n` and parses each line independently, mirroring the line-by-line logic in the streaming `data` handler. Final partial line is parsed best-effort; everything before is captured.
+
+R3-2. `[FIXED]` `import.meta.dirname` requires Node ≥20.11 but `package.json` engines specifies `>=18.18.0`. On Node 18, `join(undefined, ...)` produces a broken supervisor path; background runs silently fail. (deepseek)
+   → Resolution: replaced with `dirname(fileURLToPath(import.meta.url))` which works in Node 18+. Imports updated.
+
+**Consolidated SHOULD-FIX (5):**
+
+R3-3. `[FIXED]` macOS cancel fallback only documented in comments — runtime output says "cancelled" without warning the user that the kill might hit a recycled PID. (Codex)
+   → Resolution: cancel handler now emits a `WARNING: macOS cancel uses best-effort PID match` line to stdout when the platform fallback is taken, so the user sees the trade-off at invocation time.
+
+R3-4. `[FIXED]` `jq` is an unnecessary hard dependency — Node is already required, so use a small Node script for safe JSON construction. (Codex)
+   → Resolution: install-local.sh now invokes `node` (already required by package.json) to build marketplace.json. Reads each plugin's manifest with JSON.parse and writes the marketplace.json with JSON.stringify — fully escape-safe, no jq dependency.
+
+R3-5. `[FIXED]` SessionEnd vs supervisor close can race: both can load `running`, both pass the `expectedStatus` check, last write wins (with potential overwrite of a real `completed` status by `session-ended`). (Codex)
+   → Resolution: SessionEnd's comment and the plan's CAS resolution text rewritten to honestly describe this as best-effort. The worst case is a misleading `session-ended` status on a job that actually completed — recoverable (the user can read `<id>.events` to see what really happened) but not corrupt. True flock-based serialization tracked for plan 002.
+
+R3-6. `[FIXED]` Supervisor close handler appends `tail + "\n"` to `<id>.events` after the streaming `data` handler already wrote the same bytes — duplication in the events file. (glm)
+   → Resolution: close handler no longer re-appends to events file; the streaming `data` handler already captured the raw bytes (newline-terminated or not). Only the parsed-text update to `<id>.stdout` is performed in the close handler.
+
+R3-7. `[FIXED]` Usage string in companion's default switch case still says `opencode-companion` after rename. (glm)
+   → Resolution: updated to `buddy`.
+
+**NICE-TO-HAVE:**
+
+R3-8. `[WONTFIX in plan 001]` `process.title` setting in supervisor is now cosmetic since verification uses argv. → Kept for human-readable `ps` output; comment notes it's not the verification basis.
+R3-9. `[NOTED]` Resolution text for R2-9 says "buddy-supervisor substring" but the code checks `supervisor.mjs`. Code is correct; cosmetic mismatch in resolution text. → Left as-is to preserve the resolution audit trail.
+R3-10. `[NOTED]` `argv.find(a => a.startsWith("job_"))` for job-id extraction in status/result/cancel could misparse a flag starting with `job_`. → Low risk given current arg shapes; flagged for plan 002 if real abuse surfaces.
+
+---
+
+## Opencode review summary additions for Round 3
+
+(Embedded under their respective Round 3 entries above; the consolidated section here keeps the historical "all reviewers contributed to round 3" framing without duplicating the per-finding list.)
+
 ---
 
 ## Code Review
@@ -3348,6 +3428,27 @@ R2-17. `[FIXED]` Spec shows `stdout_path`/`stderr_path` as relative paths; plan 
 (Filled in during Step 5 of `docs/development-workflow.md`. Format per `docs/code-review.md`. Three reviewers per CLAUDE.md: Codex, opencode/deepseek-v4-flash, opencode/glm-5.1.)
 
 ---
+
+## Follow-up plans queued
+
+Independently of plan 001's execution, the following follow-up plans are queued for after this merges:
+
+- **Review session continuity** (target: plan number TBD, sized small) — Workflow infrastructure plan that ships `scripts/dispatch-review.sh` (or `scripts/lib/review.mjs`), the `<project>/.claudecode-buddy/opencode/sessions/<key>-<role>-<model>.session-id` storage convention, and CLAUDE.md updates to use it. Replaces "fresh session per round" with "scoped session continuity" so reviewers can build on their own prior reasoning across rounds. Decided during plan 001's review rounds (user chose Option D scope: per-plan + per-role + per-model, with rule-based key derivation).
+
+  **Design notes for the follow-up plan:**
+
+  - **Key derivation is rule-based, not LLM-driven.** No LLM in the dispatch path: speed, determinism, cost. LLM would silently fork sessions across slightly-different labels like `plan-001` vs `plan_001`.
+  - **Key is *advisory naming*, not "plan detection".** The question we're answering is "what should the session-id storage key be," NOT "which plan is this work associated with." Those are different problems with different answers.
+  - **Rule (10 lines of bash):**
+    1. If current branch matches `feature/plan-NNN-*` → key = `plan-NNN`.
+    2. Else if in a git repo → key = `branch-<sanitized-branch-name>`.
+    3. Else → key = `scratch`.
+    4. `--session-key <name>` overrides the rule entirely.
+  - **Unnumbered work is fine.** Branch-name scope gives identical continuity benefits, just with a different label. The numbered-plan rule is workspace-convenience naming, not a correctness requirement.
+  - **`--session-key` is the universal escape hatch** for when the user wants a label different from the rule's output (e.g., on a non-conventional branch but working on plan-005).
+  - **Optional helpers** (nice-to-have, not blocking): `/opencode:sessions` slash command to list/clear stored session keys; `--reset` flag to delete the session-id file for a key.
+
+  Not folded into plan 001 because plan 001 is already large; a small focused workflow plan is cleaner.
 
 ## Post-execution report
 
