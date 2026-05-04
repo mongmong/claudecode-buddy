@@ -118,18 +118,28 @@ opencode runs occasionally hang (model API unresponsive, rate limits, network is
 
 **CPU usage is NOT a reliable signal** — LLM API calls are network-bound and consume ~0% CPU while waiting on the model.
 
-**Recommended dispatch pattern (avoids buffering the heartbeat AND captures thinking + tool calls for debugging):**
+**Pick the right dispatch pattern for the goal:**
+
+| Goal | Flags | Stdout shape |
+|---|---|---|
+| Routine review (just want the verdict prose) | `--format default --print-logs --log-level INFO` | Clean human-readable output |
+| Programmatic parsing (companion script extracts text events) | `--format json --print-logs --log-level INFO` | NDJSON; filter `type=text` |
+| Debugging a specific run (want thinking visible) | `--thinking --format default --print-logs --log-level INFO` | Thinking blocks render inline |
+| Full event-stream debugging | `--thinking --format json --print-logs --log-level INFO` | NDJSON; `type` ∈ {`text`, `thinking`, tool events} — verbose |
+
+**Common pitfall:** `--thinking --format json` together means thinking events are interleaved with text events in stdout, making the file noisy when you only want the assistant's final answer. Use `--format default` for routine reviews; reserve `--format json` for tools that actually parse the stream.
+
+**Recommended dispatch pattern (avoids buffering the heartbeat):**
 
 ```bash
 # WRONG — `| tail` buffers; you can't see incremental events.
 opencode run --model X --dangerously-skip-permissions "..." 2>&1 | tail -200
 
-# RIGHT — direct stdout/stderr capture, thinking enabled, stdin closed.
+# RIGHT (routine review) — direct stdout/stderr capture, default formatting.
 opencode run \
   --model X \
-  --thinking \
   --print-logs --log-level INFO \
-  --format json \
+  --format default \
   --dangerously-skip-permissions \
   "$(cat /tmp/prompt.txt)" \
   < /dev/null \
@@ -138,9 +148,9 @@ opencode run \
 
 Why each flag matters:
 
-- `--thinking` — emits the model's internal reasoning as `thinking`-type events in the NDJSON stream. Without this, you only see the final answer; with it, you can debug *why* the model arrived at a given conclusion (or stalled). Stdout NDJSON includes `thinking` events alongside `text` events.
 - `--print-logs --log-level INFO` — emits per-event log lines to **stderr** (`message.part.delta publishing`, etc.) so the err-file growth is the heartbeat. Without this, the only signal is stdout, which buffers per assistant message.
-- `--format json` — raw NDJSON event stream. Each line is parseable; thinking, text, tool calls each have their own event type. Use `jq -c 'select(.type | IN("thinking","tool_call_start","text"))'` to filter.
+- `--format default` — clean human-readable output to stdout. Add `--thinking` to inline thinking blocks when actively debugging a stuck run; otherwise omit it (thinking content is otherwise noise).
+- `--format json` — raw NDJSON event stream for programmatic consumers (the companion script). Each line is parseable; `type` ∈ {`text`, `thinking`, `tool_call_start`, `tool_call_finish`, ...}. Use `jq -c 'select(.type=="text") | .part.text'` to extract assistant text only.
 - `< /dev/null` — close stdin explicitly. Without this, opencode can wait on stdin EOF and appear hung.
 - Prompt via `$(cat /tmp/prompt.txt)` — write the prompt to a file via a quoted-delimiter heredoc to dodge shell quoting traps and ARG_MAX risk. Same pattern as the `opencode-review` subagent uses internally.
 
