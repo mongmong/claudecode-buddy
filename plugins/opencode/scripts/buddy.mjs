@@ -275,11 +275,18 @@ function isAlive(pid) {
 function pidIsOurSupervisor(pid, jobId) {
   if (!isAlive(pid)) return false;
   if (process.platform !== "linux") {
+    // R2-4: best-effort on macOS / other.
     return true;
   }
   try {
+    // The supervisor sets process.title = "buddy-supervisor:<jobId>". On Linux,
+    // process.title overwrites argv (via uv_set_process_title / PR_SET_NAME +
+    // argv overwrite), so /proc/<pid>/cmdline shows the title — both the
+    // "buddy-supervisor" prefix AND the jobId. Match BOTH substrings to defend
+    // against PID reuse: a recycled PID running an unrelated command with the
+    // jobId in its argv would NOT also have "buddy-supervisor".
     const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
-    return cmdline.includes("supervisor.mjs") && cmdline.includes(jobId);
+    return cmdline.includes("buddy-supervisor") && cmdline.includes(jobId);
   } catch {
     return false;
   }
@@ -664,7 +671,7 @@ function runCancel(rawArgs) {
         if (process.platform !== "linux") return true;
         try {
           const cmdline = fs.readFileSync("/proc/" + p + "/cmdline", "utf8");
-          return cmdline.includes("supervisor.mjs") && cmdline.includes(jobId);
+          return cmdline.includes("buddy-supervisor") && cmdline.includes(jobId);
         } catch { return false; }
       }
       setTimeout(() => {
