@@ -8,6 +8,16 @@ import { detectConfig, defaultConfigPath } from "./lib/config-detection.mjs";
 import { resolveScope, getDiff } from "./lib/scope.mjs";
 import { buildReviewPrompt } from "./lib/prompt.mjs";
 import { invokeOpencode, invokeOpencodeRaw } from "./lib/invoke.mjs";
+import { dispatchOpencode } from "./lib/review-dispatch.mjs";
+import {
+  currentSessionKey,
+  loadSessionId,
+  deleteSessionId,
+  acquireSessionLock,
+  sessionLockPath,
+} from "./lib/sessions.mjs";
+import { verifySessionExists } from "./lib/session-capture.mjs";
+import { rmSync } from "node:fs";
 import { extractTrailer } from "./lib/trailer.mjs";
 import { splitArgs } from "./lib/args.mjs";
 import { listModels } from "./lib/list-models.mjs";
@@ -17,7 +27,7 @@ const VALID_SCOPES = new Set(["auto", "working-tree", "branch"]);
 
 function parseReviewArgs(rawArgs) {
   const argv = rawArgs.flatMap((a) => splitArgs(a));
-  const out = { scope: "auto", base: "main", model: null };
+  const out = { scope: "auto", base: "main", model: null, sessionKey: null, reset: false, noSession: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--scope") {
@@ -35,11 +45,22 @@ function parseReviewArgs(rawArgs) {
       const v = argv[++i];
       if (v === undefined) return { ok: false, error: "--model requires a value (provider/model)" };
       out.model = v;
+    } else if (a === "--session-key") {
+      const v = argv[++i];
+      if (v === undefined) return { ok: false, error: "--session-key requires a value" };
+      out.sessionKey = v;
+    } else if (a === "--reset") {
+      out.reset = true;
+    } else if (a === "--no-session") {
+      out.noSession = true;
     } else if (a.startsWith("--")) {
-      return { ok: false, error: `unknown flag: ${a}. Supported: --scope, --base, --model.` };
+      return { ok: false, error: `unknown flag: ${a}. Supported: --scope, --base, --model, --session-key, --reset, --no-session.` };
     } else if (a.length > 0) {
       return { ok: false, error: `unexpected positional argument: ${a}. The review subcommand only accepts flag-style arguments.` };
     }
+  }
+  if (out.reset && out.noSession) {
+    return { ok: false, error: "--reset and --no-session are mutually exclusive (reset is destructive; no-session is non-destructive)" };
   }
   return { ok: true, value: out };
 }
@@ -177,6 +198,9 @@ function parseRunArgs(rawArgs) {
   let model = null;
   let yolo = false;
   let background = false;
+  let sessionKey = null;
+  let reset = false;
+  let noSession = false;
   const seen = new Set();
   const guardDuplicate = (flag) => {
     if (seen.has(flag)) return { ok: false, error: `duplicate flag: ${flag} (already specified)` };
@@ -200,12 +224,21 @@ function parseRunArgs(rawArgs) {
       const v = argv[++i];
       if (v === undefined) return { ok: false, error: "--model requires a value" };
       model = v;
+    } else if (a === "--session-key") {
+      const dup = guardDuplicate("--session-key"); if (dup) return dup;
+      const v = argv[++i];
+      if (v === undefined) return { ok: false, error: "--session-key requires a value" };
+      sessionKey = v;
+    } else if (a === "--reset") {
+      reset = true;
+    } else if (a === "--no-session") {
+      noSession = true;
     } else if (a === "--yolo") {
       yolo = true;
     } else if (a === "--background") {
       background = true;
     } else if (a.startsWith("--")) {
-      return { ok: false, error: `unknown flag: ${a}. Supported: --task, --task-file, --model, --yolo, --background.` };
+      return { ok: false, error: `unknown flag: ${a}. Supported: --task, --task-file, --model, --yolo, --background, --session-key, --reset, --no-session.` };
     } else if (a.length > 0) {
       return { ok: false, error: `unexpected positional argument: ${a}. Use --task or --task-file.` };
     }
@@ -216,12 +249,15 @@ function parseRunArgs(rawArgs) {
   if (task !== null && taskFile !== null) {
     return { ok: false, error: "--task and --task-file are mutually exclusive" };
   }
+  if (reset && noSession) {
+    return { ok: false, error: "--reset and --no-session are mutually exclusive (reset is destructive; no-session is non-destructive)" };
+  }
   if (taskFile !== null) {
     const safeRead = readTaskFileFdBound(taskFile);
     if (!safeRead.ok) return { ok: false, error: safeRead.error };
     task = safeRead.value;
   }
-  return { ok: true, value: { task, model, yolo, background } };
+  return { ok: true, value: { task, model, yolo, background, sessionKey, reset, noSession } };
 }
 
 function emitTextOnly(text) {
@@ -393,11 +429,21 @@ async function runReview(rawArgs) {
     base: resolved.value.base,
   });
 
-  const invocation = await invokeOpencode({
+  const projectDir = process.env.CLAUDE_PROJECT_DIR ?? cwd;
+  const opencodeArgs = ["run", "--dangerously-skip-permissions", "--format", "json", "--dir", cwd];
+  if (args.model) opencodeArgs.push("--model", args.model);
+
+  const invocation = await dispatchOpencode({
     binary: cli.binary,
-    prompt,
     cwd,
+    projectDir,
+    role: "review",
     model: args.model,
+    prompt,
+    opencodeArgs,
+    sessionKeyOverride: args.sessionKey ?? null,
+    reset: args.reset ?? false,
+    noSession: args.noSession ?? false,
   });
 
   if (!invocation.ok) {
@@ -405,6 +451,12 @@ async function runReview(rawArgs) {
     process.exit(0);
   }
 
+  if (invocation.sessionId) {
+    process.stderr.write(
+      `opencode session: ${invocation.sessionId} ` +
+      `(key=${invocation.sessionKey}; --session-key to override; --reset to start fresh)\n`,
+    );
+  }
   emitTextWithVerdict(invocation.text);
   process.exit(0);
 }
@@ -481,14 +533,9 @@ async function runRun(rawArgs) {
   const opencodeArgs = ["run", "--format", "json", "--dir", cwd];
   if (args.yolo) opencodeArgs.push("--dangerously-skip-permissions");
   if (args.model) opencodeArgs.push("--model", args.model);
-  opencodeArgs.push(args.task);
 
-  // Foreground runs are synchronous in this very process — there is no
-  // separate supervised process for /opencode:cancel to signal. Recording
-  // process.pid here would let cancel try to verify *buddy itself* against
-  // the buddy-supervisor cmdline check, which would always fail with a
-  // confusing "no longer our supervisor" message. Use null so cancel can
-  // short-circuit with a clear "cannot cancel a foreground job" message.
+  // Foreground runs are synchronous — pid:null so /opencode:cancel
+  // short-circuits cleanly rather than confusingly checking buddy's own pid.
   const job = createJob(projectDir, {
     kind: "run",
     model: args.model,
@@ -496,10 +543,17 @@ async function runRun(rawArgs) {
     summary: args.task.split("\n")[0].slice(0, 80),
   });
 
-  const invocation = await invokeOpencodeRaw({
+  const invocation = await dispatchOpencode({
     binary: cli.binary,
-    args: opencodeArgs,
     cwd,
+    projectDir,
+    role: "run",
+    model: args.model,
+    prompt: args.task,
+    opencodeArgs,
+    sessionKeyOverride: args.sessionKey ?? null,
+    reset: args.reset ?? false,
+    noSession: args.noSession ?? false,
   });
 
   if (!invocation.ok) {
@@ -518,6 +572,12 @@ async function runRun(rawArgs) {
     exit_code: 0,
   });
 
+  if (invocation.sessionId) {
+    process.stderr.write(
+      `opencode session: ${invocation.sessionId} ` +
+      `(key=${invocation.sessionKey}; --session-key to override; --reset to start fresh)\n`,
+    );
+  }
   emitTextOnly(invocation.text);
   process.stdout.write("\n---\nFiles changed:\n");
   process.stdout.write(diffSummary(cwd));
@@ -531,6 +591,39 @@ function runRunBackground(args, cwd, projectDir, cli) {
     summary: args.task.split("\n")[0].slice(0, 80),
   });
 
+  // Session continuity: parent owns pre-flight + lock acquisition before
+  // spawning the supervisor. Per round-6 simplified lock design, the lock is
+  // pure mkdir-EEXIST. Parent-owned acquisition + supervisor-owned release at
+  // close keeps the at-most-one-holder invariant across the parent → supervisor
+  // lifecycle.
+  const key = currentSessionKey({ cwd, override: args.sessionKey });
+  const lock = acquireSessionLock(projectDir, key, "run", args.model);
+  let degraded = false;
+  let resumeId = null;
+
+  if (!lock.ok) {
+    process.stderr.write(
+      `warn: another opencode dispatch holds the session lock for ${key}/run/${args.model}; ` +
+      `running this background job without session continuity to avoid race.\n`,
+    );
+    if (args.reset) {
+      process.stderr.write(`warn: --reset ignored because another dispatch holds the lock\n`);
+    }
+    degraded = true;
+  } else {
+    if (args.reset) deleteSessionId(projectDir, key, "run", args.model);
+    let storedId = args.noSession ? null : loadSessionId(projectDir, key, "run", args.model).value;
+
+    if (storedId !== null) {
+      const verify = verifySessionExists(cli.binary, storedId);
+      if (verify.ok && !verify.exists) {
+        deleteSessionId(projectDir, key, "run", args.model);
+        storedId = null;
+      }
+    }
+    resumeId = storedId;
+  }
+
   const opencodeArgs = [
     "run",
     "--print-logs", "--log-level", "INFO",
@@ -539,16 +632,46 @@ function runRunBackground(args, cwd, projectDir, cli) {
     "--dir", cwd,
   ];
   if (args.model) opencodeArgs.push("--model", args.model);
+  if (resumeId !== null) opencodeArgs.push("--session", resumeId);
   opencodeArgs.push(args.task);
 
   const supervisorPath = join(dirname(fileURLToPath(import.meta.url)), "lib", "supervisor.mjs");
 
+  // Supervisor argv: 5 session-continuity positionals (role, sessionKey,
+  // model, noSession, degraded) BEFORE ...opencodeArgs.
   const supervisor = spawn(
     process.execPath,
-    [supervisorPath, job.id, projectDir, cli.binary, cwd, ...opencodeArgs],
+    [
+      supervisorPath,
+      job.id,
+      projectDir,
+      cli.binary,
+      cwd,
+      "run",
+      key,
+      args.model ?? "",
+      String(!!args.noSession),
+      String(degraded),
+      ...opencodeArgs,
+    ],
     { detached: true, stdio: "ignore" },
   );
   supervisor.unref();
+
+  // Lock-ownership handoff. Parent releases the lock if spawn() fails
+  // synchronously OR fires "error" before "spawn". Otherwise ownership
+  // transfers to the supervisor's own crash/close handlers.
+  if (!degraded) {
+    let ownershipTransferred = false;
+    supervisor.once("error", (err) => {
+      if (ownershipTransferred) return;
+      try { rmSync(sessionLockPath(projectDir, key, "run", args.model), { recursive: true, force: true }); } catch {}
+      process.stderr.write(`error: failed to spawn supervisor: ${err.message}\n`);
+    });
+    supervisor.once("spawn", () => {
+      ownershipTransferred = true;
+    });
+  }
 
   updateJob(projectDir, job.id, {
     pid: supervisor.pid,
@@ -559,6 +682,11 @@ function runRunBackground(args, cwd, projectDir, cli) {
   });
 
   process.stdout.write(`Started job ${job.id} in the background (pid ${supervisor.pid}).\n`);
+  if (resumeId) {
+    process.stdout.write(`Resuming opencode session: ${resumeId} (key=${key})\n`);
+  } else if (degraded) {
+    process.stdout.write(`Running without session continuity (lock contention).\n`);
+  }
   process.stdout.write(`Check status:  /opencode:status ${job.id}\n`);
   process.stdout.write(`Get result:    /opencode:result ${job.id}\n`);
   process.stdout.write(`Cancel:        /opencode:cancel ${job.id}\n`);
