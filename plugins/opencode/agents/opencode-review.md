@@ -48,7 +48,9 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" prompt --prompt-file "$PROMPT_FIL
 
 If `--model` is omitted, the prompt subcommand falls back to the `OPENCODE_MODEL` env var (if set), then to opencode's configured default.
 
-2. **Git-diff convenience (SECONDARY)** — only when the orchestrator explicitly says "review the working-tree diff" or "review branch X" without supplying its own prompt text. Arguments here are *flag-style only* (`--scope`, `--base`, `--model`); the companion's argument parser whitelists known flags so injection through this route is bounded.
+2. **Git-diff convenience (SECONDARY)** — only when the orchestrator explicitly says "review the working-tree diff" or "review branch X" without supplying its own prompt text. Arguments here are *flag-style only* (`--scope`, `--base`, `--model`, `--session-key`, `--reset`, `--no-session`); the companion's argument parser whitelists known flags so injection through this route is bounded.
+
+Session continuity (v0.3.0+): the `review` subcommand resumes the prior opencode session for `(plan-or-branch, role=review, model)` by default. Orchestrators can pass `--session-key <name>` to override, `--reset` to start fresh (after a confused reviewer session), or `--no-session` for a one-off detached review.
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" review "$FLAGS"

@@ -108,6 +108,8 @@ Every plan — new or revised — must pass BOTH a Codex review AND an opencode 
 
 A plan that hasn't passed both reviews is not ready for execution, regardless of how confident Claude is in it. The three-model consensus (Claude + Codex + opencode) catches blind spots no single model can see — and since this workspace's *purpose* is to make opencode-as-reviewer ergonomic from inside Claude Code, eating our own dog food matters.
 
+**Session continuity (v0.3.0+, plan 002):** the opencode subagent automatically resumes the prior session for `(plan-or-branch, role, model)` between rounds, so the reviewer remembers what they said in earlier rounds. No invocation change needed — the dispatcher handles it. If a reviewer's session gets confused, pass `--reset` to start fresh on the next round.
+
 ### Handling hung reviews
 
 opencode runs occasionally hang (model API unresponsive, rate limits, network issue). Symptoms:
@@ -171,10 +173,11 @@ jq -r 'select(.type=="text") | .part.text' /tmp/review.out | tail -c 4000
 
 1. Verify hang by checking the output file size: if no growth for >60s and the opencode log shows no progress, the run is genuinely stuck.
 2. Kill the process (`kill <pid>`).
-3. Re-dispatch with a different model from the same tier (e.g., substitute `volcengine-plan/glm-5.1` for `deepseek/deepseek-v4-pro` if the latter hangs).
-4. Note the substitution explicitly in the review verdict header so the model used is auditable.
+3. **Try `--reset` first** (v0.3.0+) — if the issue is a confused reviewer session rather than the model itself, dispatching with `--reset` discards the stored session-id and starts fresh. Often resolves the hang without changing models.
+4. If `--reset` doesn't help, re-dispatch with a different model from the same tier (e.g., substitute `volcengine-plan/glm-5.1` for `deepseek/deepseek-v4-pro` if the latter hangs).
+5. Note the substitution explicitly in the review verdict header so the model used is auditable.
 
-Plan 002 is expected to ship a `scripts/dispatch-review.sh` wrapper that automates hang detection (file-growth poll) and fallback-model retry, so this manual procedure becomes the exception rather than the norm.
+Plan 002 (v0.3.0) shipped session continuity with `--reset` as the recovery primitive. A future plan may add `scripts/dispatch-review.sh` for automated hang detection (file-growth poll) and fallback-model retry.
 
 ## Development Workflow
 

@@ -1,6 +1,6 @@
 ---
 description: Delegate a write-capable coding task to opencode (foreground or --background)
-argument-hint: '[--task <text> | --task-file <path>] [--model <provider/model>] [--yolo] [--background]'
+argument-hint: '[--task <text> | --task-file <path>] [--model <provider/model>] [--yolo] [--background] [--session-key <name>] [--reset] [--no-session]'
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
@@ -46,4 +46,11 @@ Output handling:
 
 Argument handling:
 - Preserve the user's arguments exactly (apart from injecting the model picker's choice).
-- Supported flags: `--task`, `--task-file`, `--model`, `--yolo`, `--background`. Unknown flags or unexpected positional args are rejected with exit 2 — surface the error verbatim.
+- Supported flags: `--task`, `--task-file`, `--model`, `--yolo`, `--background`, `--session-key`, `--reset`, `--no-session`. Unknown flags or unexpected positional args are rejected with exit 2 — surface the error verbatim.
+
+Session continuity (v0.3.0+):
+- By default, this command **resumes the prior opencode session** scoped to `(plan-or-branch, role=run, model)`. Successive runs on the same plan/branch share the prior context — useful for "continue where I left off" iterations.
+- Session key is derived from the git branch: `feature/plan-NNN-*` → `plan-NNN`; other branches → `branch-<sanitised>`; non-git → `scratch`.
+- `--session-key <name>` to override the rule.
+- `--reset` to discard the stored session-id and start fresh (recovery for confused sessions).
+- `--no-session` for a one-off detached task that does NOT touch the running thread (skips reuse + save).
