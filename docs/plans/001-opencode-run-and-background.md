@@ -2069,8 +2069,9 @@ Reads <stdout_path> from the job record. Tells the user to wait if the job is st
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { resolve } from "node:path";
 import { runCompanion, makeTempRepo } from "./helpers.mjs";
-import { createJob, loadJob } from "../../plugins/opencode/scripts/lib/jobs.mjs";
+import { createJob, loadJob, updateJob } from "../../plugins/opencode/scripts/lib/jobs.mjs";
 
 test("cancel <job-id> with no live pid marks the job as cancelled", async () => {
   const { dir, cleanup } = makeTempRepo();
@@ -2254,15 +2255,34 @@ function runCancel(rawArgs) {
   }
   // Kill the entire process group (negative pgid) so opencode dies too.
   try { process.kill(-job.pgid, "SIGTERM"); } catch {}
-  // R4-2: SIGKILL escalation. Originally tried setTimeout+unref, but the
-  // unref'd timer can't keep the process alive across our process.exit(0) —
-  // the escalation never fired. Spawn a tiny detached helper that survives
-  // our exit and sends SIGKILL after 2s if any group member still alive.
+  // R4-2 + R5-1: SIGKILL escalation. setTimeout+unref doesn't survive our
+  // process.exit, so we spawn a detached helper. The helper RE-VERIFIES that
+  // the pid still belongs to our supervisor before SIGKILLing the pgid —
+  // otherwise a recycled pgid in the 2s grace window could be hit by mistake.
   const escalator = spawn(
     process.execPath,
     [
       "-e",
-      `setTimeout(() => { try { process.kill(-${job.pgid}, "SIGKILL"); } catch {} }, 2000)`,
+      `
+      const fs = require("node:fs");
+      const pid = ${job.pid};
+      const pgid = ${job.pgid};
+      const jobId = ${JSON.stringify(job.id)};
+      function alive(p) { try { process.kill(p, 0); return true; } catch { return false; } }
+      function ours(p) {
+        if (!alive(p)) return false;
+        if (process.platform !== "linux") return true; // best-effort on non-Linux
+        try {
+          const cmdline = fs.readFileSync("/proc/" + p + "/cmdline", "utf8");
+          return cmdline.includes("supervisor.mjs") && cmdline.includes(jobId);
+        } catch { return false; }
+      }
+      setTimeout(() => {
+        if (alive(pid) && ours(pid)) {
+          try { process.kill(-pgid, "SIGKILL"); } catch {}
+        }
+      }, 2000);
+      `,
     ],
     { detached: true, stdio: "ignore" },
   );
@@ -3441,6 +3461,19 @@ R4-2. `[FIXED]` cancel schedules a SIGKILL escalation timer via `setTimeout` wit
 
 R4-3. `[FIXED]` Spec says install path is `~/.claude/plugins/marketplaces/local/`, plan says `~/.claude/plugins/marketplaces/claudecode-buddy-local/`. (Codex + deepseek convergent)
    → Resolution: spec updated to `claudecode-buddy-local/`.
+
+### Round 5 — 2026-05-04
+
+**Codex verdict:** NEEDS-REVISION (0 BLOCKERS, 2 SHOULD-FIX) — significant: first round with no blockers.
+**opencode/deepseek-v4-pro and glm-5.1:** not re-run (both APPROVE'd in R4 / R3 respectively).
+
+**Should-fix**
+
+R5-1. `[FIXED]` Detached SIGKILL escalator helper at `runCancel` bypasses the pid/jobId re-verification done before SIGTERM. If the supervisor exits and the pgid is recycled during the 2-second grace, the helper would SIGKILL an unrelated process group. (Codex)
+   → Resolution: escalator helper now contains a re-verification step (alive + ours check via /proc/<pid>/cmdline on Linux; best-effort on non-Linux) before sending SIGKILL. The helper is spawned with the pid, pgid, and jobId baked into its inline `-e` script.
+
+R5-2. `[FIXED]` Cancel test imports incomplete: `resolve` (from `node:path`) and `updateJob` (from `lib/jobs.mjs`) are referenced in the test body but not imported. (Codex)
+   → Resolution: imports added.
 
 ---
 
