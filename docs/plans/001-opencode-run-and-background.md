@@ -3475,6 +3475,19 @@ R5-1. `[FIXED]` Detached SIGKILL escalator helper at `runCancel` bypasses the pi
 R5-2. `[FIXED]` Cancel test imports incomplete: `resolve` (from `node:path`) and `updateJob` (from `lib/jobs.mjs`) are referenced in the test body but not imported. (Codex)
    → Resolution: imports added.
 
+### Round 6 — 2026-05-04
+
+**Codex verdict:** **APPROVE**. No blockers, no should-fix, no nice-to-have. Plan 001 dual-review gate is satisfied.
+
+Final tally across all three reviewers:
+- Codex (gpt-5.5): APPROVE on R6 (after 5 rounds of NEEDS-REVISION; trajectory: 5B → 2B → 1B → 1B → 0B → clean)
+- opencode/deepseek-v4-pro: APPROVE on R4 (after 3 rounds of NEEDS-REVISION)
+- opencode/glm-5.1: APPROVE on R3 (after 2 rounds of NEEDS-REVISION)
+
+Total findings addressed across rounds: 14 unique BLOCKERS, ~30 unique SHOULD-FIX, ~12 NICE-TO-HAVE. The plan converged through systematic per-round revision; many findings were 3-way convergent (real issues across reviewers), some were single-reviewer catches. Both opencode reviewers ran with the proven dispatch pattern (`< /dev/null`, direct stdout/stderr capture, `--print-logs --log-level INFO`, `--format default`, prompt via heredoc). Hung-review handling and per-format trade-offs documented in CLAUDE.md.
+
+Plan ready for user approval and implementation.
+
 ---
 
 ## Opencode review summary additions for Round 3
