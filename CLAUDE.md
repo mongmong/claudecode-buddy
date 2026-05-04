@@ -108,6 +108,35 @@ Every plan — new or revised — must pass BOTH a Codex review AND an opencode 
 
 A plan that hasn't passed both reviews is not ready for execution, regardless of how confident Claude is in it. The three-model consensus (Claude + Codex + opencode) catches blind spots no single model can see — and since this workspace's *purpose* is to make opencode-as-reviewer ergonomic from inside Claude Code, eating our own dog food matters.
 
+### Handling hung reviews
+
+opencode runs occasionally hang (model API unresponsive, rate limits, network issue). Symptoms:
+
+- Background task elapsed time exceeds the typical review duration (~3-5 min for a small plan).
+- The captured output file stops growing.
+- The opencode log at `~/.local/share/opencode/log/<timestamp>.log` shows only the initial INFO line and no subsequent activity.
+
+**CPU usage is NOT a reliable signal** — LLM API calls are network-bound and consume ~0% CPU while waiting on the model.
+
+**Recommended dispatch pattern (avoids buffering the heartbeat):**
+
+```bash
+# WRONG — `| tail` buffers; you can't see incremental events.
+opencode run --model X --dangerously-skip-permissions "..." 2>&1 | tail -200
+
+# RIGHT — direct stdout/stderr capture. Files grow as opencode streams events.
+opencode run --model X --print-logs --log-level INFO --format json --dangerously-skip-permissions "..." > /tmp/review.out 2> /tmp/review.err
+```
+
+**Recovery procedure when a review is hung:**
+
+1. Verify hang by checking the output file size: if no growth for >60s and the opencode log shows no progress, the run is genuinely stuck.
+2. Kill the process (`kill <pid>`).
+3. Re-dispatch with a different model from the same tier (e.g., substitute `volcengine-plan/glm-5.1` for `deepseek/deepseek-v4-pro` if the latter hangs).
+4. Note the substitution explicitly in the review verdict header so the model used is auditable.
+
+Plan 002 is expected to ship a `scripts/dispatch-review.sh` wrapper that automates hang detection (file-growth poll) and fallback-model retry, so this manual procedure becomes the exception rather than the norm.
+
 ## Development Workflow
 
 Follow `docs/development-workflow.md` exactly for every plan (Steps 1–6: Design → Plan → Build → Verify → Review → Ship). Do not skip steps or batch them. Key points:
