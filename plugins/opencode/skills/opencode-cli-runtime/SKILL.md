@@ -14,6 +14,14 @@ Primary helper for free-form prompt forwarding (the subagent's main mode):
 Secondary helper for git-diff convenience review (rarely used by the subagent — `/opencode:review` covers that):
 - `node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" review "<flag-style args>"`
 
+Tertiary helper for write-capable task delegation (used by `opencode:opencode-run` subagent):
+- `node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" run --task-file <path> [--model <provider/model>] [--yolo] [--background]` — same `--task-file`-under-allowed-dir contract as the `prompt` route. `--yolo` opts into `--dangerously-skip-permissions` (opencode writes without prompting); without it, opencode's own prompts apply and may block the subagent (in non-interactive contexts the companion now hard-rejects without `--yolo`).
+
+When to use which:
+- `prompt` — review / Q&A / no file modifications expected.
+- `run` — explicit task delegation that may modify files.
+- `review` — git-diff convenience for the user-facing slash command (rarely used by subagents).
+
 Other input modes for `prompt`:
 - `... prompt <positional words>` — joined by space; only safe when the prompt is known to contain no shell metacharacters. The subagent never uses this; reserved for ad-hoc CLI testing.
 - `--stdin` is explicitly **NOT supported in plan 000** (security review deferred — it would enable arbitrary file reads via shell redirection).
