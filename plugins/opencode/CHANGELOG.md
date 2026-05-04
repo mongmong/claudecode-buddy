@@ -4,7 +4,7 @@ All notable changes to the opencode plugin are documented here.
 
 ## 0.2.0 — Write-capable run + background tasks + local install
 
-Implemented per `docs/plans/001-opencode-run-and-background.md`. Plan converged after 6 dual-review rounds (Codex + 2 opencode reviewers); 14 unique BLOCKERS, ~30 SHOULD-FIX, ~12 NICE-TO-HAVE addressed before approval.
+Implemented per `docs/plans/001-opencode-run-and-background.md`. Plan converged after 6 dual-review rounds (Codex + opencode/deepseek-v4-pro per D-004's plan-review pipeline); 14 unique BLOCKERS, ~30 SHOULD-FIX, ~12 NICE-TO-HAVE addressed before approval. Branch then passed the three-reviewer code-review gate (Codex + opencode/deepseek-v4-flash + opencode/glm-5.1) with all Must Fix and Should Fix items resolved before this release.
 
 ### Added
 - `/opencode:run` slash command (write-capable, foreground or `--background`, with per-invocation model picker and `--yolo` opt-in for `--dangerously-skip-permissions`).

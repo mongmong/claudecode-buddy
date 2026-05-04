@@ -256,6 +256,88 @@ test("run --background captures parsed assistant text (not raw NDJSON)", async (
   }
 });
 
+test("run accepts a bundled --task token from the slash-command wrapper", async () => {
+  // Reproduces the codex P2 finding: when /opencode:run injects --model and
+  // bash passes "$ARGUMENTS" as one quoted token, the bundled `--task "..."`
+  // token must be split and parsed correctly.
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    setupRepo(dir);
+    const result = await runCompanion(
+      ["run", "--model", "vendor/x", '--task "Just say done."'],
+      { OPENCODE_BIN: RUN_OK_BIN, OPENCODE_REPO_ROOT: dir, CLAUDE_PROJECT_DIR: dir, OPENCODE_BUDDY_FORCE_INTERACTIVE: "1" },
+    );
+    assert.equal(result.code, 0, `stderr: ${result.stderr}`);
+    assert.match(result.stdout, /Done\. No code changes/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("run preserves --task values containing whitespace when args are pre-split", async () => {
+  // Inverse of the bundled-token test: when the caller (subagent / direct
+  // CLI) already split argv, "Just say done." must NOT be split again.
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    setupRepo(dir);
+    const result = await runCompanion(
+      ["run", "--task", "Just say done.", "--yolo"],
+      { OPENCODE_BIN: RUN_OK_BIN, OPENCODE_REPO_ROOT: dir, CLAUDE_PROJECT_DIR: dir },
+    );
+    assert.equal(result.code, 0, `stderr: ${result.stderr}`);
+    assert.match(result.stdout, /Done\. No code changes/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("run rejects duplicate --model with exit 2", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    setupRepo(dir);
+    const result = await runCompanion(
+      ["run", "--model", "vendor/x", "--model", "vendor/y", "--task", "x", "--yolo"],
+      { OPENCODE_BIN: RUN_OK_BIN, OPENCODE_REPO_ROOT: dir, CLAUDE_PROJECT_DIR: dir },
+    );
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /duplicate flag: --model/i);
+  } finally {
+    cleanup();
+  }
+});
+
+test("run rejects duplicate --task with exit 2", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    setupRepo(dir);
+    const result = await runCompanion(
+      ["run", "--task", "first", "--task", "second", "--yolo"],
+      { OPENCODE_BIN: RUN_OK_BIN, OPENCODE_REPO_ROOT: dir, CLAUDE_PROJECT_DIR: dir },
+    );
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /duplicate flag: --task/i);
+  } finally {
+    cleanup();
+  }
+});
+
+test("run records foreground job with pid: null (not buddy's own pid)", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    setupRepo(dir);
+    await runCompanion(
+      ["run", "--task", "Just say done.", "--model", "vendor/x"],
+      { OPENCODE_BIN: RUN_OK_BIN, OPENCODE_REPO_ROOT: dir, CLAUDE_PROJECT_DIR: dir, OPENCODE_BUDDY_FORCE_INTERACTIVE: "1" },
+    );
+    const list = listJobs(dir);
+    assert.equal(list.value[0].pid, null,
+      `foreground jobs must record pid: null so /opencode:cancel short-circuits cleanly; ` +
+      `got ${list.value[0].pid}`);
+  } finally {
+    cleanup();
+  }
+});
+
 test("run --background captures the REAL exit_code (not always 0)", async () => {
   const { dir, cleanup } = makeTempRepo();
   try {

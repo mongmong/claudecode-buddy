@@ -119,13 +119,16 @@ child.on("close", (code, signal) => {
     stdoutBuf = "";
   }
 
-  // Best-effort CAS: only mark completed/failed if status is still "running".
-  // A concurrent cancel that flipped the status to "cancelled" wins.
+  // Best-effort CAS: mark completed/failed unless a concurrent cancel already
+  // flipped the status to "cancelled". A "session-ended" status (set by the
+  // SessionEnd hook when Claude Code exits while we keep running) is also a
+  // valid pre-state — when we naturally finish in a later session, our real
+  // exit_code is the authoritative value, so we reclaim the record.
   const status = code === 0 ? "completed" : "failed";
   updateJob(projectDir, jobId, {
     status,
     finished_at: new Date().toISOString(),
     exit_code: code,
-  }, { expectedStatus: "running" });
+  }, { expectedStatus: ["running", "session-ended"] });
   process.exit(code ?? 0);
 });

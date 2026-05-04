@@ -66,8 +66,11 @@ export function loadJob(projectDir, id) {
 export function updateJob(projectDir, id, patch, { expectedStatus = null } = {}) {
   const loaded = loadJob(projectDir, id);
   if (!loaded.ok) return loaded;
-  if (expectedStatus !== null && loaded.value.status !== expectedStatus) {
-    return fail(`status changed: expected ${expectedStatus}, found ${loaded.value.status}`);
+  if (expectedStatus !== null) {
+    const allowed = Array.isArray(expectedStatus) ? expectedStatus : [expectedStatus];
+    if (!allowed.includes(loaded.value.status)) {
+      return fail(`status changed: expected ${allowed.join("|")}, found ${loaded.value.status}`);
+    }
   }
   const merged = { ...loaded.value, ...patch };
   writeJobAtomic(jobPath(projectDir, id), merged);

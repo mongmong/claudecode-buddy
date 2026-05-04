@@ -20,8 +20,9 @@ Why: zero cognitive overhead for users familiar with the codex plugin; the works
 ## D-002 — One Node companion script per plugin, with `lib/` utilities
 
 **Decided in:** plan 000.
+**Naming superseded by D-009 (plan 001).** The structural decision (one companion file + `lib/` split + no external deps) stands; only the file name changed.
 
-Each plugin's runtime lives in a single Node ESM file (`scripts/<plugin>-companion.mjs`) with subcommand routing. Pure utilities split into `scripts/lib/*.mjs`. No external runtime dependencies (Node ≥ 18.18 built-ins only) for v1.
+Each plugin's runtime lives in a single Node ESM file (originally `scripts/<plugin>-companion.mjs`, renamed to `scripts/buddy.mjs` per D-009) with subcommand routing. Pure utilities split into `scripts/lib/*.mjs`. No external runtime dependencies (Node ≥ 18.18 built-ins only) for v1.
 
 Why: keeps the runtime auditable in one file, mirrors codex's `codex-companion.mjs` pattern, and avoids the lockfile / dependency-management story until a real need surfaces.
 

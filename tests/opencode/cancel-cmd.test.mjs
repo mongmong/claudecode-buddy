@@ -68,3 +68,63 @@ test("cancel <already-completed-id> is a no-op (no error)", async () => {
     cleanup();
   }
 });
+
+test("cancel refuses to signal a live PID that is NOT our supervisor", async () => {
+  // PID-reuse defense: a live process whose /proc/<pid>/cmdline doesn't
+  // contain `buddy-supervisor` must NOT receive SIGTERM. We spawn a plain
+  // `sleep` (with no buddy-supervisor in argv or process.title), record its
+  // pid in a job, run cancel, and verify the sleep is still alive afterwards.
+  const { dir, cleanup } = makeTempRepo();
+  let sleeper;
+  try {
+    sleeper = spawn("/bin/sh", ["-c", "exec sleep 30"], { detached: true, stdio: "ignore" });
+    sleeper.unref();
+    await new Promise((r) => setTimeout(r, 100));
+    const job = createJob(dir, { kind: "run", model: "vendor/x", pid: sleeper.pid, pgid: sleeper.pid, summary: "imposter" });
+
+    const result = await runCompanion(["cancel", job.id], { CLAUDE_PROJECT_DIR: dir });
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /no longer our supervisor|refusing to send signals/i);
+
+    let alive = true;
+    try { process.kill(sleeper.pid, 0); } catch { alive = false; }
+    assert.equal(alive, true, `cancel must NOT signal a non-supervisor pid (pid ${sleeper.pid} should still be alive)`);
+
+    const after = loadJob(dir, job.id);
+    assert.equal(after.value.status, "cancelled");
+  } finally {
+    if (sleeper && sleeper.pid) { try { process.kill(sleeper.pid, "SIGTERM"); } catch {} }
+    cleanup();
+  }
+});
+
+test("cancel refuses foreground jobs (pid:null) with a clear message", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    const job = createJob(dir, { kind: "run", model: "vendor/x", pid: null, pgid: null, summary: "fg" });
+    const result = await runCompanion(["cancel", job.id], { CLAUDE_PROJECT_DIR: dir });
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /cannot cancel foreground job/i);
+    const after = loadJob(dir, job.id);
+    assert.equal(after.value.status, "running",
+      "cancelling a foreground job must NOT change its status — the synchronous shell owns it");
+  } finally {
+    cleanup();
+  }
+});
+
+test("cancel works on a job whose status is session-ended (survived a session boundary)", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    const job = createJob(dir, { kind: "run", model: "vendor/x", pid: 2147483647, pgid: 2147483647, summary: "survivor" });
+    updateJob(dir, job.id, { status: "session-ended" });
+    const result = await runCompanion(["cancel", job.id], { CLAUDE_PROJECT_DIR: dir });
+    assert.equal(result.code, 0);
+    const after = loadJob(dir, job.id);
+    assert.equal(after.value.status, "cancelled",
+      "session-ended jobs must be cancellable from a later session — otherwise long-running " +
+      "background jobs that outlive their session become permanently uncancelable");
+  } finally {
+    cleanup();
+  }
+});

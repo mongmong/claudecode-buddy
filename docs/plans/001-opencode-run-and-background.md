@@ -3498,7 +3498,184 @@ Plan ready for user approval and implementation.
 
 ## Code Review
 
-(Filled in during Step 5 of `docs/development-workflow.md`. Format per `docs/code-review.md`. Three reviewers per CLAUDE.md: Codex, opencode/deepseek-v4-flash, opencode/glm-5.1.)
+**Date:** 2026-05-04.
+**Branch:** `feature/plan-001-opencode-run-and-background` against `main`.
+**Reviewers (per CLAUDE.md "Code Review"):**
+- `[codex]` — Codex via `codex-companion.mjs review --wait` (gpt-5.5).
+- `[opencode-deepseek]` — opencode pinned to `deepseek/deepseek-v4-flash`.
+- `[opencode-glm]` — opencode pinned to `volcengine-plan/glm-5.1`.
+
+All three reviewers ran the full branch diff in parallel.
+Reviewer raw output stored in `/tmp/code-review-{deepseek,glm}.{out,err}` and the codex companion task `bdj5qztok` for posterity.
+
+### Findings
+
+#### [FIXED] Must Fix — `parseRunArgs` rejects bundled `--task` token in the model-picker flow `[codex]`
+
+**File:** `plugins/opencode/scripts/buddy.mjs:166`
+
+`/opencode:run` (`commands/run.md:33`) invokes `node buddy.mjs run --model "$CHOSEN_MODEL" "$ARGUMENTS"`.
+With the model picker engaged, bash splits this into argv `["run", "--model", "<model>", "<bundled $ARGUMENTS>"]` (length 4).
+Because `parseRunArgs` only applies `splitArgs` when `rawArgs.length === 1`, the bundled `--task "fix bug"` token is treated as one unknown flag and rejected with exit 2.
+This breaks the *default* run path for any user who lets the model picker pick.
+
+**→ Resolution:** apply `splitArgs` selectively to any arg that starts with `--` AND contains whitespace (a heuristic that distinguishes "bundled CLI input from the wrapper" from "a value already separated by bash word-splitting"). Direct invocation (`buddy.mjs run --task "say done"`) still works because `say done` is a value-arg, doesn't start with `--`, and is left intact.
+
+#### [FIXED] Must Fix — `session-ended` status blocks supervisor close + `/opencode:cancel` `[codex]`
+
+**File:** `plugins/opencode/hooks/session-end.mjs:33` (and `lib/supervisor.mjs:36/50/91/129`, `buddy.mjs:632`).
+
+When Claude Code exits while a background job is still running, `SessionEnd` flips the job to `status: "session-ended"`.
+Subsequently, the supervisor's close handler and `/opencode:cancel` both call `updateJob` with `expectedStatus: "running"`.
+The CAS rejects the update, so the job permanently keeps `status: "session-ended"` even after the supervisor naturally finishes (its `exit_code` and `finished_at` are never recorded), and `/opencode:cancel` from the next session refuses to act on the job.
+This affects ordinary long-running background jobs that outlive a session — exactly the scenario the SessionStart hook tells the user to handle with `/opencode:cancel <id>`.
+
+**→ Resolution:** broaden `updateJob`'s `expectedStatus` to accept an array of allowed statuses; supervisor close-time finalisation accepts `["running", "session-ended"]`; `/opencode:cancel` accepts `["running", "session-ended"]`. SessionEnd remains `expectedStatus: "running"` (don't mark dead/cancelled jobs as session-ended). Add a regression test covering "background job survives session boundary then completes naturally".
+
+#### [FIXED] Should Fix — `decisions.md` D-002 stale, contradicts D-009 `[opencode-glm]`
+
+**File:** `docs/architecture/decisions.md:24`
+
+D-002 still describes the runtime entry point as `scripts/<plugin>-companion.mjs`.
+D-009 superseded that with `scripts/buddy.mjs`.
+Per the file's own append-only convention ("If a later plan supersedes a decision, leave the original in place and add a new D-NNN that references and supersedes it"), D-002's description must be annotated with a forward pointer.
+
+**→ Resolution:** add a "**Superseded in part by D-009**" annotation to D-002, leaving the historical text intact.
+
+#### [FIXED] Should Fix — CHANGELOG misrepresents plan-review pipeline as 2-opencode `[opencode-deepseek]`
+
+**File:** `plugins/opencode/CHANGELOG.md:7`
+
+`"6 dual-review rounds (Codex + 2 opencode reviewers)"` conflates the plan-review pipeline (Codex + 1 opencode/deepseek-v4-pro per D-004) with the code-review pipeline (Codex + 2 opencode).
+Plan 001's rounds were Codex + opencode/deepseek-v4-pro.
+
+**→ Resolution:** rephrase to "6 dual-review rounds (Codex + opencode/deepseek-v4-pro)".
+
+#### [FIXED] Should Fix — `parseRunArgs` silently overwrites duplicate flags `[opencode-glm]`
+
+**File:** `plugins/opencode/scripts/buddy.mjs:174-186`
+
+A second `--model` (or `--task`/`--task-file`) silently overwrites the first.
+The slash-command wrapper guards against double model-injection via the conditional at `commands/run.md:36-39`, but direct `buddy.mjs` callers (subagent, CI, tests) lose the safety net.
+
+**→ Resolution:** reject duplicate occurrences of `--model`, `--task`, `--task-file` with a clear error in `parseRunArgs`. Add a unit test covering the duplicate-flag case.
+
+#### [FIXED] Should Fix — `diffSummary` misses staged changes `[opencode-deepseek]`
+
+**File:** `plugins/opencode/scripts/buddy.mjs:246-268`
+
+`diffSummary` runs `git diff --stat` (working tree) plus `git ls-files --others --exclude-standard` (untracked). If opencode's task includes `git add`, those staged changes don't appear in the user-visible summary.
+
+**→ Resolution:** also include `git diff --cached --stat` in the summary, labelled "Staged changes" so the user can see them distinctly.
+
+#### [FIXED] Should Fix — `runRun` foreground job records `pid: process.pid` (buddy itself) `[opencode-deepseek]`
+
+**File:** `plugins/opencode/scripts/buddy.mjs:460`
+
+A foreground job's `pid` field stores `process.pid` (the buddy script's own PID).
+If `/opencode:cancel` is invoked on that job ID, `pidIsOurSupervisor` checks buddy's cmdline, finds no `buddy-supervisor` substring, and prints "no longer our supervisor" — a confusing error message for what is conceptually "you cannot cancel a synchronous foreground job".
+
+**→ Resolution:** set `pid: null` on foreground job records and have `/opencode:cancel` short-circuit with `cannot cancel foreground job (no supervising process); foreground runs are synchronous in the calling shell.`
+
+#### [FIXED] Should Fix — Missing test: `pidIsOurSupervisor` rejects non-supervisor PID `[opencode-deepseek][opencode-glm]`
+
+**File:** `tests/opencode/cancel-cmd.test.mjs`
+
+Both opencode reviewers flagged the absence of a test where a job's `pid` points to a *live* process whose `/proc/<pid>/cmdline` does NOT match `buddy-supervisor`. The PID-reuse defense is the headline safety mechanism for cancel; without a test, it could regress silently.
+
+**→ Resolution:** add a test that spawns `sleep 60` (or similar non-supervisor process), records its pid in a job record, calls `runCancel`, and asserts the cancel refuses to signal it (and the sleep is still alive after).
+
+#### [WONTFIX] Should Fix — `result` outputs nothing for sub-second completed jobs with empty stdout `[opencode-deepseek]`
+
+**File:** `plugins/opencode/scripts/buddy.mjs:591-607`
+
+Edge case: if a background job completes faster than the supervisor writes its first text event, `result` reads an empty `<id>.stdout` and prints only the trailer line. Reviewer's suggestion: print "no output captured" in that branch.
+
+**→ Resolution:** filed as `[WONTFIX]` for v0.2.0. The trailer line already includes the exit code, and `<id>.events` is available for inspection. Adding a "no output captured" message risks masking real "supervisor crashed before writing anything" cases — those *should* surface as silence so the user notices `<id>.supervisor-error`. Revisit in plan 002 alongside flock-based serialization.
+
+#### [WONTFIX] Should Fix — `supervisor.mjs` rewrites `<id>.stdout` on every text chunk (O(n²) I/O) `[opencode-deepseek][opencode-glm]`
+
+**File:** `plugins/opencode/scripts/lib/supervisor.mjs:77`
+
+Both opencode reviewers flagged the per-chunk `writeFileSync(stdoutPath, finalText)` as O(n²) I/O. Both also acknowledged it's acceptable for v0.2.0 ("LLM output is modest"). Plan 002 has it queued.
+
+**→ Resolution:** `[WONTFIX]` for v0.2.0; tracked in CHANGELOG known limitations + plan 002 scope.
+
+#### [WONTFIX-FALSE] Should Fix — `invokeOpencodeRaw` missing `child.stdin.end()` `[opencode-deepseek]`
+
+**File:** `plugins/opencode/scripts/lib/invoke.mjs:42-91`
+
+Reviewer claimed the function does not close the child's stdin.
+Verified at line 56: `try { child.stdin.end(); } catch {}` is present.
+
+**→ Resolution:** false positive; no change needed.
+
+#### [WONTFIX] Should Fix — `pidIsOurSupervisor` NUL-handling clarity `[opencode-deepseek]`
+
+**File:** `plugins/opencode/scripts/buddy.mjs:288-289`
+
+Reviewer downgraded this themselves after deeper analysis: `.includes()` on a JS string containing literal `\0` characters works correctly. Documentation-only.
+
+**→ Resolution:** `[WONTFIX]` (cosmetic; reviewer self-downgraded).
+
+#### [WONTFIX-NTH] Nice to Have — `argv.find(a => a.startsWith("job_"))` is permissive `[opencode-glm]`
+
+**File:** `plugins/opencode/scripts/buddy.mjs:545,579,612`
+
+A string like `job_../../etc/passwd` starts with `job_` and passes the filter; `loadJob` then rejects it on `JOB_ID_RE.test`. Safe (defense-in-depth caught it) but the error message could be cleaner if the extraction site used `JOB_ID_RE.test` directly.
+
+**→ Resolution:** `[WONTFIX]` for v0.2.0. Low value; defense-in-depth already handles it. Cosmetic refactor queued for plan 002 polish if it surfaces again.
+
+#### [WONTFIX-NTH] Nice to Have — `parseRunArgs` splitting style differs from `runStatus`/`runResult`/`runCancel` `[opencode-glm]`
+
+**File:** `plugins/opencode/scripts/buddy.mjs:543 vs 166`
+
+Run uses length-based splitting; status/result/cancel use `flatMap(splitArgs)` because their args (job IDs) never contain whitespace. The difference is intentional and documented in the run path's comment (lines 161-165). Reviewer suggested mirroring the comment to status/result/cancel for symmetry.
+
+**→ Resolution:** `[WONTFIX]` (cosmetic).
+
+#### [WONTFIX-NTH] Nice to Have — Missing test for status with `session-ended` jobs `[opencode-deepseek]`
+
+**File:** `tests/opencode/status-cmd.test.mjs`
+
+Status table rendering when one or more jobs are `session-ended` has no dedicated test. The rendering branch is trivial (a status string) and exercised indirectly via the hooks test that creates session-ended records.
+
+**→ Resolution:** `[WONTFIX]` (low value).
+
+#### [WONTFIX-NTH] Nice to Have — `SKILL.md` should mention `opencode:opencode-run` `[opencode-deepseek]`
+
+**File:** `plugins/opencode/skills/opencode-cli-runtime/SKILL.md:9`
+
+Reviewer is correct that the skill description still references `opencode-rescue` (a future role) and not the now-shipping `opencode-run`.
+Verified the actual SKILL.md text in this branch already mentions `opencode-run` as a current consumer (the reviewer's quote was outdated; the file was updated in commit `bafc788`).
+
+**→ Resolution:** `[WONTFIX]` — already addressed in the implementation; reviewer's quote was stale.
+
+#### [WONTFIX-NTH] Nice to Have — `hooks.json` 5s timeout may be tight `[opencode-deepseek]`
+
+**File:** `plugins/opencode/hooks/hooks.json:10,20`
+
+For workspaces with thousands of job files the readdir + parse loop could exceed 5 s. Acceptable for v0.2.0 since hook errors are non-fatal (orphan listing missing one cycle is recoverable).
+
+**→ Resolution:** `[WONTFIX]` for v0.2.0; revisit if anyone reports a hooks timeout.
+
+#### [WONTFIX-NTH] Nice to Have — Stale `.tmp` files on crash `[opencode-glm]`
+
+**File:** `plugins/opencode/scripts/lib/jobs.mjs:28-30`
+
+If the process crashes between `writeFileSync(tmp, ...)` and `renameSync(tmp, path)`, a `.tmp.<pid>.<ts>` file is left behind.
+`listJobs` correctly filters them out (line 80), so they don't affect runtime correctness; they only accumulate in `jobs/`.
+
+**→ Resolution:** `[WONTFIX]` (low value; cleanup queued for plan 002 if accumulation becomes visible).
+
+### Verdict
+
+- `[codex]` — flagged 2 P2 items, both promoted to **Must Fix** (parseRunArgs bundled-token, session-ended CAS).
+- `[opencode-deepseek]` — *Approved with suggestions*. 7 Should Fix, 4 Nice to Have.
+- `[opencode-glm]` — *Approved with suggestions*. 3 Should Fix, 4 Nice to Have.
+
+**Consolidated decision:** all `[OPEN]` items are resolved (`[FIXED]` or `[WONTFIX]` with justification).
+After applying the fixes for the 2 Must Fix and 6 Should Fix items, the branch is clear to push as a PR.
 
 ---
 

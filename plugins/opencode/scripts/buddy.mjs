@@ -158,28 +158,45 @@ function parsePromptArgs(rawArgs) {
 }
 
 function parseRunArgs(rawArgs) {
-  // Don't flatMap-splitArgs here: --task values are free-form text that may
-  // contain whitespace, and splitting "say done" into ["say", "done"] would
-  // break parsing. Bash passes the task value as a single arg already.
-  // Single-arg quoted-bundle form is supported via splitArgs only when the
-  // entire rawArgs is one element (rare for run; common for review).
-  const argv = rawArgs.length === 1 ? splitArgs(rawArgs[0]) : rawArgs;
+  // Two distinct call shapes need to coexist:
+  //   1. The slash-command wrapper passes "$ARGUMENTS" as ONE quoted token, so
+  //      we get e.g. ["--model", "vendor/x", "--task \"fix bug\" --background"].
+  //      The last element is a bundled CLI fragment that needs splitArgs.
+  //   2. Direct CLI / subagent / test calls pass each arg separately, so we
+  //      get e.g. ["--task", "fix bug"]. Here the value "fix bug" must NOT be
+  //      split — splitting "fix bug" into ["fix", "bug"] would break parsing.
+  // Heuristic: only an arg that BOTH starts with "--" AND contains whitespace
+  // is a bundled CLI fragment. A standalone value-arg (e.g. "fix bug") never
+  // starts with "--", so it's left intact. A standalone flag (e.g. "--task")
+  // never contains whitespace, so it's left intact.
+  const argv = rawArgs.flatMap((a) =>
+    a.startsWith("--") && /\s/.test(a) ? splitArgs(a) : [a],
+  );
   let task = null;
   let taskFile = null;
   let model = null;
   let yolo = false;
   let background = false;
+  const seen = new Set();
+  const guardDuplicate = (flag) => {
+    if (seen.has(flag)) return { ok: false, error: `duplicate flag: ${flag} (already specified)` };
+    seen.add(flag);
+    return null;
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--task") {
+      const dup = guardDuplicate("--task"); if (dup) return dup;
       const v = argv[++i];
       if (v === undefined) return { ok: false, error: "--task requires a value" };
       task = v;
     } else if (a === "--task-file") {
+      const dup = guardDuplicate("--task-file"); if (dup) return dup;
       const v = argv[++i];
       if (v === undefined) return { ok: false, error: "--task-file requires a path argument" };
       taskFile = v;
     } else if (a === "--model") {
+      const dup = guardDuplicate("--model"); if (dup) return dup;
       const v = argv[++i];
       if (v === undefined) return { ok: false, error: "--model requires a value" };
       model = v;
@@ -245,7 +262,15 @@ function emitTextWithOptionalVerdict(text) {
 
 function diffSummary(cwd) {
   try {
-    const out = execFileSync("git", ["diff", "--stat"], {
+    const unstaged = execFileSync("git", ["diff", "--stat"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    // Some opencode tasks `git add` files as part of their work. Include the
+    // staged diff so the user sees the full set of changes, not just the
+    // working tree.
+    const staged = execFileSync("git", ["diff", "--cached", "--stat"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -256,7 +281,11 @@ function diffSummary(cwd) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let summary = "";
-    if (out.trim()) summary += out;
+    if (unstaged.trim()) summary += unstaged;
+    if (staged.trim()) {
+      summary += "\nStaged changes:\n";
+      summary += staged;
+    }
     if (untracked.trim()) {
       summary += "\nUntracked files:\n";
       for (const line of untracked.trim().split("\n")) summary += `  ${line}\n`;
@@ -454,10 +483,16 @@ async function runRun(rawArgs) {
   if (args.model) opencodeArgs.push("--model", args.model);
   opencodeArgs.push(args.task);
 
+  // Foreground runs are synchronous in this very process — there is no
+  // separate supervised process for /opencode:cancel to signal. Recording
+  // process.pid here would let cancel try to verify *buddy itself* against
+  // the buddy-supervisor cmdline check, which would always fail with a
+  // confusing "no longer our supervisor" message. Use null so cancel can
+  // short-circuit with a clear "cannot cancel a foreground job" message.
   const job = createJob(projectDir, {
     kind: "run",
     model: args.model,
-    pid: process.pid,
+    pid: null,
     summary: args.task.split("\n")[0].slice(0, 80),
   });
 
@@ -626,10 +661,23 @@ function runCancel(rawArgs) {
     process.exit(0);
   }
 
+  // Foreground jobs record pid: null because they are synchronous in their
+  // calling shell — there's no separate process for cancel to signal.
+  if (job.pid === null && job.pgid === null) {
+    process.stdout.write(
+      `cannot cancel foreground job ${job.id}: foreground runs are synchronous ` +
+      `and have no supervising process. Interrupt the calling shell directly.\n`,
+    );
+    process.exit(0);
+  }
+
+  // Allow cancel from a session that started AFTER the previous one exited
+  // and stamped the job "session-ended". Without this, long-running background
+  // jobs that survive a session boundary become uncancelable.
   const upd = updateJob(projectDir, job.id, {
     status: "cancelled",
     finished_at: new Date().toISOString(),
-  }, { expectedStatus: "running" });
+  }, { expectedStatus: ["running", "session-ended"] });
   if (!upd.ok) {
     const after = loadJob(projectDir, job.id);
     process.stdout.write(`job ${job.id} finished before cancel could apply — status: ${after.value?.status}\n`);

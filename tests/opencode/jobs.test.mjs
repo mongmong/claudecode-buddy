@@ -248,6 +248,44 @@ test("updateJob with expectedStatus rejects when status changed (CAS)", () => {
   }
 });
 
+test("updateJob expectedStatus accepts an array of allowed statuses", () => {
+  // Required for the supervisor's natural-finish path after the SessionEnd hook
+  // has stamped the job "session-ended": the supervisor's exit_code is the
+  // authoritative final value, and it must be allowed to overwrite the
+  // session-ended marker. expectedStatus: ["running", "session-ended"] should
+  // accept either pre-state.
+  const { dir, cleanup } = makeProjectDir();
+  try {
+    const job = createJob(dir, { kind: "run", model: "x/y", pid: 1 });
+    updateJob(dir, job.id, { status: "session-ended" });
+    const r = updateJob(dir, job.id, {
+      status: "completed",
+      exit_code: 0,
+    }, { expectedStatus: ["running", "session-ended"] });
+    assert.equal(r.ok, true, `array CAS must accept session-ended; got: ${r.error}`);
+    assert.equal(r.value.status, "completed");
+    assert.equal(r.value.exit_code, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("updateJob expectedStatus array rejects when status is not in the allowed set", () => {
+  const { dir, cleanup } = makeProjectDir();
+  try {
+    const job = createJob(dir, { kind: "run", model: "x/y", pid: 1 });
+    updateJob(dir, job.id, { status: "cancelled", finished_at: new Date().toISOString() });
+    const r = updateJob(dir, job.id, {
+      status: "completed",
+      exit_code: 0,
+    }, { expectedStatus: ["running", "session-ended"] });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /status changed.*running\|session-ended.*found cancelled/i);
+  } finally {
+    cleanup();
+  }
+});
+
 test("updateJob writes are atomic (no partial reads under interruption)", () => {
   const { dir, cleanup } = makeProjectDir();
   try {
