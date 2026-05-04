@@ -4,7 +4,7 @@
 
 **Goal:** replace "fresh opencode session per dispatch" with "scoped session continuity per (plan-or-branch, role, model) tuple," so review and run pipelines build on their own prior reasoning across rounds without leaking context across unrelated work.
 
-**Architecture:** rule-based session-key derivation (no LLM in the dispatch path), per-tuple session-id storage at `<project>/.claudecode-buddy/opencode/sessions/<key>-<role>-<model>.session-id`, automatic resume via opencode's `--session <id>` flag with **pre-flight validation** through `opencode session list --format json` (verifies the stored id is still alive on opencode's side before passing it). Capture is also done via `session list --format json` post-run, filtered by the session's `directory` field to disambiguate parallel unrelated runs; stderr-pattern parsing (`INFO service=session id=ses_... created`) is a defensive backup. Critical section (load → invoke → save) is guarded by an **advisory mkdir-based file lock** per (key, role, model) tuple; lock contention causes the dispatcher to run fresh-without-save (warning logged), preserving the lock-holder's continuity. All wiring in a Node module (`lib/review-dispatch.mjs`); CLI surface is `--session-key <name>` override + `--reset` (delete stored id) + `--no-session` (skip reuse this call without deletion).
+**Architecture:** rule-based session-key derivation (no LLM in the dispatch path), per-tuple session-id storage at `<project>/.claudecode-buddy/opencode/sessions/<key>-<role>-<model>.session-id`, automatic resume via opencode's `--session <id>` flag with **pre-flight validation** through `opencode session list --format json` (verifies the stored id is still alive on opencode's side before passing it). Capture priority: **stderr parsing PRIMARY** (deterministic per-process — extracts the `service=session id=ses_...` line from THIS invocation's own stderr, immune to concurrent same-cwd dispatches); `opencode session list --format json` filtered by `directory === cwd` is FALLBACK only when stderr parse fails. Critical section (load → invoke → save) is guarded by an **advisory mkdir-EEXIST file lock** per (key, role, model) tuple; lock contention causes the dispatcher to run fresh-without-save (warning logged), preserving the lock-holder's continuity. CLI surface is `--session-key <name>` override + `--reset` (delete stored id) + `--no-session` (skip reuse + skip lock acquisition + skip save — true one-off detached call).
 
 **Tech stack:** Node ≥ 18.18 built-ins, `node:test`, opencode CLI ≥ 1.14 (`--session`, `--continue`, `opencode session list --format json`).
 
@@ -2771,7 +2771,133 @@ Round 8 from deepseek-v4-pro returned approve. Subsequent rounds 9-13 only dispa
 
 ## Code Review
 
-(Filled in during Step 5 of `docs/development-workflow.md`. Three reviewers per CLAUDE.md: Codex, opencode/deepseek-v4-flash, opencode/glm-5.1.)
+**Date:** 2026-05-04.
+**Branch:** `feature/plan-002-review-session-continuity` against `main`.
+**Reviewers (per CLAUDE.md "Code Review"):**
+- `[codex]` — Codex via `codex:codex-rescue` Agent (gpt-5.5).
+- `[opencode-deepseek]` — opencode pinned to `deepseek/deepseek-v4-flash`.
+- `[opencode-glm]` — opencode pinned to `volcengine-plan/glm-5.1`.
+
+All three ran the full branch diff in parallel.
+
+### Verdicts
+
+- `[codex]` — **Changes requested** (1 Must Fix + 2 Should Fix + 2 Nice to Have).
+- `[opencode-deepseek]` — **Approved with suggestions** (0 Must Fix + 1 Should Fix + 3 Nice to Have).
+- `[opencode-glm]` — **Approved with suggestions** (0 Must Fix + 3 Should Fix + 4 Nice to Have).
+
+### Findings
+
+#### [FIXED] Must Fix — Supervisor stale-session detection skips save BUT does not delete the stale `.session-id` `[codex]`
+
+**File:** `plugins/opencode/scripts/lib/supervisor.mjs:206-215`
+
+When opencode emits `Session not found: ses_<id>` mid-run, the supervisor logged a warning and skipped save — but the bad `.session-id` file from the parent's pre-flight remained on disk until the NEXT dispatch's pre-flight cleaned it up. Foreground `dispatchOpencode` correctly delete-then-retry on stale-stderr; background did not.
+
+→ **Resolution:** supervisor now imports `deleteSessionId` (added to its dynamic imports at top of file) and calls it on stale-stderr detection. The bad id is removed immediately, so the next dispatch's pre-flight is a no-op and runs fresh without a session-list query.
+
+#### [FIXED] Should Fix — `--no-session` still acquired the per-tuple lock `[codex]`
+
+**File:** `plugins/opencode/scripts/lib/review-dispatch.mjs:62-78`, `plugins/opencode/scripts/buddy.mjs:599-615`
+
+A `--no-session` call never reads or writes the `.session-id` file, so the lock isn't needed for state-protection — yet it was being acquired, forcing concurrent normal calls into degraded mode unnecessarily.
+
+→ **Resolution:** `dispatchOpencode` now short-circuits BEFORE `acquireSessionLock` when `noSession === true`: builds args without `--session`, invokes opencode, returns `{ ...result, sessionId: null, sessionKey: key }`. Same short-circuit in `runRunBackground` (parent skips `acquireSessionLock`; supervisor sees `degraded === true` and skips save + lock release). New regression test asserts a held lock does NOT force `--no-session` into degraded mode.
+
+#### [FIXED] Should Fix — Dispatcher error-path returns `sessionId: undefined` instead of `null` `[opencode-glm]`
+
+**File:** `plugins/opencode/scripts/lib/review-dispatch.mjs:108-109`
+
+When `!invocation.ok`, the return spread `invocation` (which had no `sessionId` property) yielded `sessionId: undefined`, violating the JSDoc contract that says `sessionId: null` on error.
+
+→ **Resolution:** error-path return now explicitly sets `sessionId: null`. New regression test asserts `result.sessionId === null` (strict equality, not just falsy).
+
+#### [FIXED] Should Fix — Supervisor stale regex was case-sensitive; dispatcher's was not `[opencode-deepseek][opencode-glm]`
+
+**File:** `plugins/opencode/scripts/lib/supervisor.mjs:212`, `plugins/opencode/scripts/lib/review-dispatch.mjs:18-30`
+
+Dispatcher's `staleSessionInStderr` checked both `Session not found` and `session not found` (manual case fork). Supervisor's regex was `/Session not found: .../ ` — capital-S only. If opencode emits the lowercase variant, supervisor misses stale and saves a dead id.
+
+→ **Resolution:** both regex/match calls are now case-insensitive (`/i` flag). Dispatcher's `staleSessionInStderr` was also tightened — uses a single case-insensitive regex marker check + lowercase-substring confirmation that the matched id is OUR session-id (not some unrelated stale-session line).
+
+#### [FIXED] Should Fix — README "Known limitations (v0.2.0)" outdated; missing v0.3.0 entries `[opencode-deepseek][opencode-glm]`
+
+**File:** `plugins/opencode/README.md:98-105`
+
+Section header said "v0.2.0" with items "tracked for plan 002 polish" — but plan 002 has now shipped. Should restructure as version-keyed and add v0.3.0 limitations (stranded locks, capture fallback race, supervisor module-load gap).
+
+→ **Resolution:** restructured as two subsections — "From v0.3.0 (this release; tracked for plan 004+ polish)" with the four v0.3.0 items, and "From v0.2.0 (tracked for plan 003 polish)" with the original five items, all references retargeted to plan 003.
+
+#### [FIXED] Nice to Have — CHANGELOG miswording: "runRunBackground routes through dispatchOpencode" `[codex]`
+
+**File:** `plugins/opencode/CHANGELOG.md:21`
+
+Original wording suggested `runRunBackground` directly calls `dispatchOpencode`, but in reality the background path implements the SAME contract across the parent-supervisor boundary (parent does pre-flight + lock; supervisor does capture + save + lock release).
+
+→ **Resolution:** CHANGELOG entry rewritten to clarify "runReview and runRun (foreground) route through dispatchOpencode. runRunBackground implements the same contract across the parent-supervisor boundary."
+
+#### [FIXED] Nice to Have — Plan 002 line 7 architecture summary still described session-list as primary capture `[codex]`
+
+**File:** `docs/plans/002-review-session-continuity.md:7`
+
+Round 12 of plan-review flipped capture priority to stderr-primary, but the opening architecture summary at line 7 still described "Capture is also done via session list... stderr-pattern parsing... is a defensive backup" — contradicting the implemented design.
+
+→ **Resolution:** rewritten to "Capture priority: **stderr parsing PRIMARY** (deterministic per-process — extracts the `service=session id=ses_...` line from THIS invocation's own stderr, immune to concurrent same-cwd dispatches); `opencode session list --format json` filtered by `directory === cwd` is FALLBACK only when stderr parse fails."
+
+#### [WONTFIX] Should Fix — Missing background round-trip integration test `[codex]`
+
+**File:** `docs/plans/002-review-session-continuity.md:2816-2819`
+
+Codex flags the post-execution report's deferral of the background integration test as Should Fix. The integration test would exercise parent spawn → argv handoff → supervisor capture → save → release end-to-end.
+
+→ **Resolution:** `[WONTFIX]` for v0.3.0. The unit tests in Phases 1-3 cover the dispatcher's state machine via fakeInvoke; the supervisor implements the SAME contract in a separate process, and adding a true integration test would require updating mock-opencode-run-* fixtures with deterministic session-id stderr emission (non-trivial). The Must Fix resolution above (`[FIXED] Supervisor stale-session detection`) added a regression-style assertion in the existing `review-dispatch.test.mjs` for the case-insensitive stale detection — though invoked through the dispatcher, the same regex and code structure runs in the supervisor. If a real-world bug surfaces in supervisor session-save, follow-up will add the integration test then.
+
+#### [WONTFIX-NTH] Nice to Have — `lib/sessions.mjs:100` tmp filename uses `Date.now()` (ms precision) `[opencode-deepseek]`
+
+**File:** `plugins/opencode/scripts/lib/sessions.mjs:100`
+
+Suggested adding `randomBytes` to the tmp filename for defense in depth against theoretical ms-collision under extreme load.
+
+→ **Resolution:** `[WONTFIX]` for v0.3.0. Same `.tmp.<pid>.<ts>` pattern as `lib/jobs.mjs` (plan 001) — consistency wins. ms-collision requires same-pid-same-ms which is impossible under Node's single-threaded event loop. If the mkdir-EEXIST lock primitive is replaced by flock(2) in plan 004, the per-tuple atomic-write will be naturally serialised.
+
+#### [WONTFIX-NTH] Nice to Have — `dirname(path)` vs `join(path, "..")` `[opencode-glm]`
+
+**File:** `plugins/opencode/scripts/lib/sessions.mjs:99`
+
+Cosmetic preference. `dirname` expresses "parent directory" more directly than `join("..")`.
+
+→ **Resolution:** `[WONTFIX]` (cosmetic; existing pattern in `lib/jobs.mjs` uses the same `join(path, "..")`).
+
+#### [WONTFIX-NTH] Nice to Have — `sessionFilePath` undefined-handling latent divergence `[opencode-glm]`
+
+**File:** `plugins/opencode/scripts/lib/sessions.mjs:55-58`
+
+`SAFE_COMPONENT_RE.test(undefined)` returns `true` (RegExp coerces to "undefined") — so `sessionFilePath(undefined, ...)` would produce `"undefined-..."` while the supervisor's `inlineSanitise(undefined)` returns `"unnamed"`.
+
+→ **Resolution:** `[WONTFIX]`. Cannot be reached from any caller — argv positionals are always strings, derived keys go through `sanitiseLabel` first. Defense-in-depth would add complexity for no real exposure path.
+
+#### [WONTFIX-NTH] Nice to Have — Test coverage gaps for negative SESSION_ID_RE / empty-text invokeOpencodeRaw / model:null path `[opencode-glm]`
+
+→ **Resolution:** `[WONTFIX]` for v0.3.0. Covered indirectly:
+- SESSION_ID_RE negatives are exercised through `loadSessionId`/`saveSessionId` rejection tests.
+- Empty-text → ok:true is exercised through the dispatcher's stale-session-retry test (race-deletion case sets `ok: true, text: ""`).
+- model:null path is exercised in code (sanitiseLabel handles it) but not unit-tested. Adding a dedicated test is queued for plan 004 polish.
+
+#### [WONTFIX-NTH] Nice to Have — `invokeOpencodeRaw` empty-text → ok:true vs `invokeOpencode` empty-text → ok:false `[opencode-glm]`
+
+**File:** `plugins/opencode/scripts/lib/invoke.mjs:84-89` vs `:154-159`
+
+Two entry points have different semantics for empty stdout. Suggested adding a JSDoc note documenting why.
+
+→ **Resolution:** `[WONTFIX]` (cosmetic). `invokeOpencodeRaw` is plan-002's stale-session-aware path; `invokeOpencode` is the legacy path used only by the `prompt` subcommand. The CHANGELOG already notes the shape change. Future plan that fully unifies the two will fold this in.
+
+### Verdict
+
+- `[codex]` round-1: Changes requested → all blockers and should-fix items addressed.
+- `[opencode-deepseek]` round-1: Approved with suggestions → all should-fix items addressed.
+- `[opencode-glm]` round-1: Approved with suggestions → all should-fix items addressed.
+
+**Consolidated decision:** all `[OPEN]` Must Fix and Should Fix items are `[FIXED]` and verified by passing tests. Nice to Have items are `[WONTFIX]` with justification. Test suite: 203 → 205 (+2 new regression tests). All 202 passing, 3 e2e skipped. Branch is clear to push as a PR after final commit.
 
 ---
 

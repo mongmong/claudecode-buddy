@@ -14,13 +14,19 @@ import {
 
 // Defensive backup: detect "Session not found: <storedId>" in captured stderr.
 // Fires when opencode's session is deleted out-of-band between our pre-flight
-// verification and the actual run (rare race window).
+// verification and the actual run (rare race window). Case-insensitive match
+// for forward-compat with log format shifts.
+const STALE_SESSION_MARKER = /session not found: /i;
 function staleSessionInStderr(stderr, sessionId) {
   if (typeof stderr !== "string" || sessionId === null) return false;
-  return (
-    stderr.includes(`Session not found: ${sessionId}`) ||
-    stderr.includes(`session not found: ${sessionId}`)
-  );
+  // Look for the marker followed by our specific session-id (substring match).
+  // We don't use a regex with the id interpolated because session-ids are
+  // alphanumeric (already escape-safe), but keeping the substring approach
+  // tolerates surrounding punctuation/quoting variations.
+  const m = stderr.match(STALE_SESSION_MARKER);
+  if (!m) return false;
+  // Confirm OUR session-id appears after the marker (not some other one).
+  return stderr.toLowerCase().includes(`session not found: ${sessionId.toLowerCase()}`);
 }
 
 // High-level dispatch entry point. Resolves the session key, loads any stored
@@ -55,6 +61,16 @@ export async function dispatchOpencode({
   invokeImpl = invokeOpencodeRaw,
 }) {
   const key = currentSessionKey({ cwd, override: sessionKeyOverride });
+
+  // --no-session short-circuit (per code-review): a one-off detached call
+  // never reads or writes the .session-id file, so the lock isn't needed.
+  // Skipping lock acquisition prevents --no-session calls from forcing
+  // concurrent normal calls into degraded mode unnecessarily.
+  if (noSession) {
+    const args = [...opencodeArgs, "--print-logs", "--log-level", "INFO", prompt];
+    const result = await invokeImpl({ binary, args, cwd });
+    return { ...result, sessionId: null, sessionKey: key };
+  }
 
   // Acquire lock around the load → invoke → save critical section. On
   // contention, run in degraded mode (no continuity for this call) so the
@@ -106,7 +122,9 @@ export async function dispatchOpencode({
     }
 
     if (!invocation.ok) {
-      return { ...invocation, sessionKey: key };
+      // Explicit sessionId: null on error path so the contract holds (callers
+      // that destructure result.sessionId get null, not undefined).
+      return { ...invocation, sessionId: null, sessionKey: key };
     }
 
     // Capture priority: stderr (deterministic per-process) → session list (fallback).

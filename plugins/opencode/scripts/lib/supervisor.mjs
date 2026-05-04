@@ -95,7 +95,7 @@ process.on("uncaughtException", (err) => {
 // Dynamic imports for own modules — now safe since the crash handler is
 // registered above.
 const { updateJob, jobsDir } = await import("./jobs.mjs");
-const { saveSessionId, sessionLockPath } = await import("./sessions.mjs");
+const { saveSessionId, deleteSessionId, sessionLockPath } = await import("./sessions.mjs");
 const { captureSessionIdFromStderr, captureLatestSessionForCwd } = await import("./session-capture.mjs");
 
 const stdoutPath = joinPath(jobsDir(projectDir), `${jobId}.stdout`);
@@ -203,12 +203,17 @@ child.on("close", (code, signal) => {
     let captured = null;
     try {
       const stderrBuf = readFileSync(stderrPath, "utf8");
-      // If our --session was stale, do NOT save — the next dispatch's
-      // pre-flight will see no file and run fresh. Detect "Session not
-      // found" pattern.
-      const staleHit = stderrBuf.match(/Session not found: (ses_[A-Za-z0-9]+)/);
+      // Stale-session detection: if our --session was stale, opencode emits
+      // "Session not found: ses_<id>" to stderr. Case-insensitive match for
+      // consistency with the foreground dispatcher's staleSessionInStderr().
+      // We DELETE the stored session-id file here (per code-review feedback
+      // from Codex round-1) so the next dispatch's pre-flight runs fresh
+      // immediately — without this, the bad id sits on disk until the next
+      // dispatch's pre-flight discovers it via session list query.
+      const staleHit = stderrBuf.match(/session not found: (ses_[A-Za-z0-9]+)/i);
       if (staleHit) {
-        process.stderr.write(`warn: opencode reported stale session ${staleHit[1]} mid-run; skipping save\n`);
+        process.stderr.write(`warn: opencode reported stale session ${staleHit[1]} mid-run; deleting stored id\n`);
+        deleteSessionId(projectDir, sessionKey, role, model);
       } else {
         // Stderr-primary, session-list-fallback (per plan 002 capture priority).
         captured = captureSessionIdFromStderr(stderrBuf);

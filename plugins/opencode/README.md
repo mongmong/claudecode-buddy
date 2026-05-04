@@ -95,12 +95,19 @@ Background `/opencode:run --background` jobs persist state to `<project>/.claude
 
 Hooks (`SessionStart`, `SessionEnd`) detect orphaned jobs across session boundaries.
 
-## Known limitations (v0.2.0)
+## Known limitations
 
-Documented for transparency; tracked for plan 002 polish:
+### From v0.3.0 (this release; tracked for plan 004+ polish)
 
-- **macOS cancel** uses best-effort PID match (no `/proc/<pid>/cmdline`). If pid is recycled in the SIGKILL grace window, an unrelated process could be hit. The `pidIsOurSupervisor` Linux check verifies via cmdline; macOS support via `ps -o command=` is tracked for plan 002. The cancel command emits a `WARNING` line on non-Linux to surface this trade-off.
-- **`--task-file` TOCTOU defense is Linux-only** (uses `/proc/self/fd/<N>` for fd-bound path resolution). macOS support deferred to plan 002.
-- **CAS in `updateJob` is best-effort, not truly atomic** — read-check-write window is microseconds; under truly concurrent writers (supervisor close vs SessionEnd vs cancel), last-write-wins. Worst case: a misleading status (e.g., `session-ended` on a job that completed); recoverable via `<id>.events`. True flock serialization is plan 002 work.
-- **ARG_MAX limit** for `--task` as positional CLI arg (>2MB on Linux; >256KB on macOS). Use `--task-file` for very long tasks. Stdin-as-prompt support tracked for plan 002.
+- **No auto-reclamation of stranded session locks.** A dispatch that crashes without releasing the per-tuple `.lock` directory requires manual `rm -rf <path>.lock`. The error message on the next acquisition includes the exact recovery command. Auto-reclaim queued for plan 004 with proper `flock(2)` semantics. (See "Session continuity" → "Stranded locks" above.)
+- **Capture fallback under same-cwd-different-tuple races.** When stderr capture fails (only happens if opencode's log format changes), the session-list-cwd-filtered fallback can pick the wrong session for parallel `/opencode:review` + `/opencode:run` dispatches. Stderr is the primary path precisely because it's deterministic per-process — this is a fallback-only edge case.
+- **macOS case-insensitive realpath comparison** in `captureLatestSessionForCwd` is best-effort. Pathological mixed-case symlink chains are out of scope for v0.3.0.
+- **Supervisor module-load gap.** Microsecond window between `spawn()` returning and the top-of-file `uncaughtException` handler registering — a thrown ESM import in that window would strand the lock. Static-imports-of-built-ins-only minimises this, but documented for transparency.
+
+### From v0.2.0 (tracked for plan 003 polish)
+
+- **macOS cancel** uses best-effort PID match (no `/proc/<pid>/cmdline`). If pid is recycled in the SIGKILL grace window, an unrelated process could be hit. The `pidIsOurSupervisor` Linux check verifies via cmdline; macOS support via `ps -o command=` is tracked for plan 003. The cancel command emits a `WARNING` line on non-Linux to surface this trade-off.
+- **`--task-file` TOCTOU defense is Linux-only** (uses `/proc/self/fd/<N>` for fd-bound path resolution). macOS support deferred to plan 003.
+- **CAS in `updateJob` is best-effort, not truly atomic** — read-check-write window is microseconds; under truly concurrent writers (supervisor close vs SessionEnd vs cancel), last-write-wins. Worst case: a misleading status (e.g., `session-ended` on a job that completed); recoverable via `<id>.events`. True flock serialization is plan 003 work.
+- **ARG_MAX limit** for `--task` as positional CLI arg (>2MB on Linux; >256KB on macOS). Use `--task-file` for very long tasks. Stdin-as-prompt support tracked for plan 003.
 - **Single-pass trailer parsing** — `/opencode:review` does not retry on malformed JSON trailers. Verdict becomes `needs-attention (parse error)` immediately.

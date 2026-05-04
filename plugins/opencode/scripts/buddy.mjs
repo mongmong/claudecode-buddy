@@ -597,31 +597,40 @@ function runRunBackground(args, cwd, projectDir, cli) {
   // close keeps the at-most-one-holder invariant across the parent → supervisor
   // lifecycle.
   const key = currentSessionKey({ cwd, override: args.sessionKey });
-  const lock = acquireSessionLock(projectDir, key, "run", args.model);
   let degraded = false;
   let resumeId = null;
+  let lockAcquired = false;
 
-  if (!lock.ok) {
-    process.stderr.write(
-      `warn: another opencode dispatch holds the session lock for ${key}/run/${args.model}; ` +
-      `running this background job without session continuity to avoid race.\n`,
-    );
-    if (args.reset) {
-      process.stderr.write(`warn: --reset ignored because another dispatch holds the lock\n`);
-    }
-    degraded = true;
+  // --no-session short-circuit (per code-review): a one-off detached run
+  // never reads or writes the .session-id file, so the lock isn't needed.
+  // Treat as degraded-mode-by-design (no save, no continuity, no lock).
+  if (args.noSession) {
+    degraded = true; // supervisor will not save and will not release a lock
   } else {
-    if (args.reset) deleteSessionId(projectDir, key, "run", args.model);
-    let storedId = args.noSession ? null : loadSessionId(projectDir, key, "run", args.model).value;
-
-    if (storedId !== null) {
-      const verify = verifySessionExists(cli.binary, storedId);
-      if (verify.ok && !verify.exists) {
-        deleteSessionId(projectDir, key, "run", args.model);
-        storedId = null;
+    const lock = acquireSessionLock(projectDir, key, "run", args.model);
+    if (!lock.ok) {
+      process.stderr.write(
+        `warn: another opencode dispatch holds the session lock for ${key}/run/${args.model}; ` +
+        `running this background job without session continuity to avoid race.\n`,
+      );
+      if (args.reset) {
+        process.stderr.write(`warn: --reset ignored because another dispatch holds the lock\n`);
       }
+      degraded = true;
+    } else {
+      lockAcquired = true;
+      if (args.reset) deleteSessionId(projectDir, key, "run", args.model);
+      let storedId = loadSessionId(projectDir, key, "run", args.model).value;
+
+      if (storedId !== null) {
+        const verify = verifySessionExists(cli.binary, storedId);
+        if (verify.ok && !verify.exists) {
+          deleteSessionId(projectDir, key, "run", args.model);
+          storedId = null;
+        }
+      }
+      resumeId = storedId;
     }
-    resumeId = storedId;
   }
 
   const opencodeArgs = [
@@ -658,10 +667,11 @@ function runRunBackground(args, cwd, projectDir, cli) {
   );
   supervisor.unref();
 
-  // Lock-ownership handoff. Parent releases the lock if spawn() fails
-  // synchronously OR fires "error" before "spawn". Otherwise ownership
-  // transfers to the supervisor's own crash/close handlers.
-  if (!degraded) {
+  // Lock-ownership handoff (only if parent acquired the lock — no-op for
+  // --no-session and lock-contention degraded modes). Parent releases the
+  // lock if spawn() fails synchronously OR fires "error" before "spawn".
+  // Otherwise ownership transfers to the supervisor's own crash/close handlers.
+  if (lockAcquired) {
     let ownershipTransferred = false;
     supervisor.once("error", (err) => {
       if (ownershipTransferred) return;

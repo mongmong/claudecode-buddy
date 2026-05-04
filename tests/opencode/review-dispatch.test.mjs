@@ -263,6 +263,78 @@ test("dispatchOpencode: lock contention → degraded mode (no --session, no save
   } finally { cleanup(); }
 });
 
+test("dispatchOpencode: --no-session short-circuits BEFORE lock acquisition (does not contend with concurrent normal calls)", async () => {
+  // Per code-review feedback: --no-session is a one-off detached call that
+  // never reads or writes the .session-id file, so the lock isn't needed.
+  // A normal-mode dispatch holding the lock concurrently must NOT force the
+  // --no-session call into degraded mode.
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    const heldLock = acquireSessionLock(dir, "scratch", "review", "vendor/m");
+    assert.equal(heldLock.ok, true, "set up: another dispatch holds the lock");
+    try {
+      const fake = {
+        ok: true,
+        text: "one-off body",
+        stderr: "INFO 2026 service=session id=ses_oneoff slug=foo created\n",
+      };
+      const result = await dispatchOpencode({
+        binary: MOCK_SESSION_BIN,
+        cwd: dir,
+        projectDir: dir,
+        role: "review",
+        model: "vendor/m",
+        prompt: "ad-hoc",
+        opencodeArgs: ["run", "--format", "default"],
+        noSession: true,
+        invokeImpl: fakeInvoke(fake),
+      });
+      assert.equal(result.ok, true);
+      assert.equal(result.sessionId, null,
+        "--no-session must report sessionId: null (no continuity attempted)");
+      assert.equal(result.degraded, undefined,
+        "--no-session must NOT enter degraded-mode path — it short-circuits before lock acquisition");
+      assert.equal(fake._observedSessionId, null,
+        "--no-session must not pass --session in argv");
+    } finally {
+      heldLock.release();
+    }
+  } finally { cleanup(); }
+});
+
+test("dispatchOpencode: error path returns sessionId: null (not undefined)", async () => {
+  // Per code-review feedback (glm SF1): the error-path return must explicitly
+  // set sessionId: null so callers that destructure the contract get null,
+  // not undefined.
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    saveSessionId(dir, "scratch", "review", "vendor/m", "ses_PRIOR");
+    const fake = {
+      ok: false,
+      error: "opencode failed somehow",
+      stderr: "",
+    };
+    await withMockSessions(dir, [
+      { id: "ses_PRIOR", updated: 100, directory: dir },
+    ], async () => {
+      const result = await dispatchOpencode({
+        binary: MOCK_SESSION_BIN,
+        cwd: dir,
+        projectDir: dir,
+        role: "review",
+        model: "vendor/m",
+        prompt: "go",
+        opencodeArgs: ["run"],
+        invokeImpl: fakeInvoke(fake),
+      });
+      assert.equal(result.ok, false);
+      assert.strictEqual(result.sessionId, null,
+        "error-path must set sessionId: null explicitly (not undefined)");
+      assert.equal(result.sessionKey, "scratch");
+    });
+  } finally { cleanup(); }
+});
+
 test("dispatchOpencode: sessionKeyOverride bypasses git rule", async () => {
   const { dir, cleanup } = makeTempRepo();
   try {
