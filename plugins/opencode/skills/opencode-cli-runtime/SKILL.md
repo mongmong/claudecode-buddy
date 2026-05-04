@@ -1,6 +1,6 @@
 ---
 name: opencode-cli-runtime
-description: Internal helper contract for calling the opencode-companion runtime from Claude Code
+description: Internal helper contract for calling the buddy runtime from Claude Code
 user-invocable: false
 ---
 
@@ -9,10 +9,18 @@ user-invocable: false
 Use this skill only inside the `opencode:opencode-review` subagent (and, in future plans, `opencode:opencode-rescue`).
 
 Primary helper for free-form prompt forwarding (the subagent's main mode):
-- `node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-companion.mjs" prompt --prompt-file <path>` — REQUIRED form for the subagent. The prompt body must be written to a temp file via a quoted-delimiter heredoc; never inline the prompt text into the bash command line. See `agents/opencode-review.md` for the exact pattern.
+- `node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" prompt --prompt-file <path>` — REQUIRED form for the subagent. The prompt body must be written to a temp file via a quoted-delimiter heredoc; never inline the prompt text into the bash command line. See `agents/opencode-review.md` for the exact pattern.
 
 Secondary helper for git-diff convenience review (rarely used by the subagent — `/opencode:review` covers that):
-- `node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-companion.mjs" review "<flag-style args>"`
+- `node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" review "<flag-style args>"`
+
+Tertiary helper for write-capable task delegation (used by `opencode:opencode-run` subagent):
+- `node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" run --task-file <path> [--model <provider/model>] [--yolo] [--background]` — same `--task-file`-under-allowed-dir contract as the `prompt` route. `--yolo` opts into `--dangerously-skip-permissions` (opencode writes without prompting); without it, opencode's own prompts apply and may block the subagent (in non-interactive contexts the companion now hard-rejects without `--yolo`).
+
+When to use which:
+- `prompt` — review / Q&A / no file modifications expected.
+- `run` — explicit task delegation that may modify files.
+- `review` — git-diff convenience for the user-facing slash command (rarely used by subagents).
 
 Other input modes for `prompt`:
 - `... prompt <positional words>` — joined by space; only safe when the prompt is known to contain no shell metacharacters. The subagent never uses this; reserved for ad-hoc CLI testing.

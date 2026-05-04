@@ -36,6 +36,60 @@ function parseEvents(stdout) {
     .map((entry) => entry.text);
 }
 
+// Lower-level entry point: caller supplies the full opencode args list.
+// Used by /opencode:run which needs to control whether --dangerously-skip-permissions
+// is included (driven by --yolo opt-in) instead of having it always-on.
+export function invokeOpencodeRaw({
+  binary,
+  args,
+  cwd,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+}) {
+  return new Promise((resolveResult) => {
+    let child;
+    try {
+      child = spawn(binary, args, { cwd });
+    } catch (err) {
+      resolveResult({ ok: false, error: `failed to spawn ${binary}: ${err.message}` });
+      return;
+    }
+    try { child.stdin.end(); } catch {}
+
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill("SIGTERM"); } catch {}
+      setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, KILL_GRACE_MS).unref();
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolveResult({ ok: false, error: `failed to invoke opencode: ${err.message}` });
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        resolveResult({ ok: false, error: `opencode timed out after ${timeoutMs} ms (signal ${signal ?? "?"})\nstderr: ${stderr}`, exit_code: code });
+        return;
+      }
+      if (code !== 0) {
+        resolveResult({ ok: false, error: `opencode exited with code ${code}\nstderr: ${stderr}`, exit_code: code });
+        return;
+      }
+      const messages = parseEvents(stdout);
+      if (messages.length === 0) {
+        resolveResult({ ok: false, error: `opencode produced no assistant text events\nstdout: ${stdout}`, exit_code: code });
+        return;
+      }
+      resolveResult({ ok: true, text: messages[messages.length - 1] });
+    });
+  });
+}
+
 export function invokeOpencode({
   binary,
   prompt,

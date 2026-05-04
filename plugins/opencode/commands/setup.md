@@ -7,7 +7,7 @@ allowed-tools: Bash(node:*)
 Run:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-companion.mjs" setup
+node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" setup
 ```
 
 Present the full command output to the user verbatim. Do not summarize.

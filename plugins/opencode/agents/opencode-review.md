@@ -34,7 +34,7 @@ PROMPT_FILE="$PROMPT_DIR/prompt.txt"
 cat > "$PROMPT_FILE" <<'OPENCODE_PROMPT_DELIMITER_DO_NOT_USE_IN_PROMPT_xK7p2qR9_END'
 <orchestrator's full prompt text — any content, including $variables, backticks, quotes>
 OPENCODE_PROMPT_DELIMITER_DO_NOT_USE_IN_PROMPT_xK7p2qR9_END
-node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-companion.mjs" prompt --prompt-file "$PROMPT_FILE"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" prompt --prompt-file "$PROMPT_FILE"
 RC=$?
 rm -rf "$PROMPT_DIR"
 exit $RC
@@ -43,7 +43,7 @@ exit $RC
 **Optional: orchestrator-supplied model.** If the orchestrator wants opencode to run on a specific model (e.g., the dual plan-review gate may want a specific reviewer model), include `--model <provider/model>` in the companion invocation:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-companion.mjs" prompt --prompt-file "$PROMPT_FILE" --model "anthropic/claude-sonnet-4-6"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" prompt --prompt-file "$PROMPT_FILE" --model "anthropic/claude-sonnet-4-6"
 ```
 
 If `--model` is omitted, the prompt subcommand falls back to the `OPENCODE_MODEL` env var (if set), then to opencode's configured default.
@@ -51,7 +51,7 @@ If `--model` is omitted, the prompt subcommand falls back to the `OPENCODE_MODEL
 2. **Git-diff convenience (SECONDARY)** — only when the orchestrator explicitly says "review the working-tree diff" or "review branch X" without supplying its own prompt text. Arguments here are *flag-style only* (`--scope`, `--base`, `--model`); the companion's argument parser whitelists known flags so injection through this route is bounded.
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-companion.mjs" review "$FLAGS"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" review "$FLAGS"
 ```
 
 Forwarding rules:
@@ -66,5 +66,5 @@ Forwarding rules:
 
 Response style:
 
-- Do not add commentary before or after the forwarded `opencode-companion` output.
+- Do not add commentary before or after the forwarded `buddy` output.
 - The orchestrator parses the trailing `verdict:` line for routing decisions; do not reformat or strip it.

@@ -75,7 +75,14 @@ For substantial code changes — new plugins, new commands, runner refactors, ma
 
 **Execution plans** (phased implementation with file lists and verification steps) go in `docs/plans/`. Numbered sequentially (000, 001, ..., 100, 101, ...). Sub-documents use letter suffixes (106a, 106b).
 
-**Design specs** go in `docs/specs/` — but only for large, novel, or cross-cutting designs that need a standalone reference document. When brainstorming produces a concrete design (components, file lists, phases decided), skip the spec and go straight to an execution plan in `docs/plans/`.
+**Design specs** go in `docs/specs/` — only when the work introduces or refines an *architectural* decision or resolves a cross-cutting *ambiguity* that other plans will need to respect. Specs hold the long-lived "what is this system shaped like, and why?". They do NOT hold execution detail (file lists, phase order, code blocks, test cases) — that belongs in the plan. A new plan touching an existing spec amends the spec inline rather than starting a new file.
+
+**Rule of thumb:**
+- Architectural decision or cross-cutting ambiguity? → spec.
+- Execution-level detail (which files, what code, what tests)? → plan.
+- Both? → amend the spec, then write the plan referencing the updated spec.
+
+`docs/architecture/decisions.md` is the *index* of cross-cutting decisions (one-line entries); the full design context lives in the relevant spec.
 
 Before writing a new plan, review existing plans in `docs/plans/` for reusable patterns and architectural decisions that must be respected. Avoid introducing duplicate code — reuse existing implementations and keep logic in a single source of truth.
 
@@ -101,6 +108,74 @@ Every plan — new or revised — must pass BOTH a Codex review AND an opencode 
 
 A plan that hasn't passed both reviews is not ready for execution, regardless of how confident Claude is in it. The three-model consensus (Claude + Codex + opencode) catches blind spots no single model can see — and since this workspace's *purpose* is to make opencode-as-reviewer ergonomic from inside Claude Code, eating our own dog food matters.
 
+### Handling hung reviews
+
+opencode runs occasionally hang (model API unresponsive, rate limits, network issue). Symptoms:
+
+- Background task elapsed time exceeds the typical review duration (~3-5 min for a small plan).
+- The captured output file stops growing.
+- The opencode log at `~/.local/share/opencode/log/<timestamp>.log` shows only the initial INFO line and no subsequent activity.
+
+**CPU usage is NOT a reliable signal** — LLM API calls are network-bound and consume ~0% CPU while waiting on the model.
+
+**Pick the right dispatch pattern for the goal:**
+
+| Goal | Flags | Stdout shape |
+|---|---|---|
+| Routine review (just want the verdict prose) | `--format default --print-logs --log-level INFO` | Clean human-readable output |
+| Programmatic parsing (companion script extracts text events) | `--format json --print-logs --log-level INFO` | NDJSON; filter `type=text` |
+| Debugging a specific run (want thinking visible) | `--thinking --format default --print-logs --log-level INFO` | Thinking blocks render inline |
+| Full event-stream debugging | `--thinking --format json --print-logs --log-level INFO` | NDJSON; `type` ∈ {`text`, `thinking`, tool events} — verbose |
+
+**Common pitfall:** `--thinking --format json` together means thinking events are interleaved with text events in stdout, making the file noisy when you only want the assistant's final answer. Use `--format default` for routine reviews; reserve `--format json` for tools that actually parse the stream.
+
+**Recommended dispatch pattern (avoids buffering the heartbeat):**
+
+```bash
+# WRONG — `| tail` buffers; you can't see incremental events.
+opencode run --model X --dangerously-skip-permissions "..." 2>&1 | tail -200
+
+# RIGHT (routine review) — direct stdout/stderr capture, default formatting.
+opencode run \
+  --model X \
+  --print-logs --log-level INFO \
+  --format default \
+  --dangerously-skip-permissions \
+  "$(cat /tmp/prompt.txt)" \
+  < /dev/null \
+  > /tmp/review.out 2> /tmp/review.err
+```
+
+Why each flag matters:
+
+- `--print-logs --log-level INFO` — emits per-event log lines to **stderr** (`message.part.delta publishing`, etc.) so the err-file growth is the heartbeat. Without this, the only signal is stdout, which buffers per assistant message.
+- `--format default` — clean human-readable output to stdout. Add `--thinking` to inline thinking blocks when actively debugging a stuck run; otherwise omit it (thinking content is otherwise noise).
+- `--format json` — raw NDJSON event stream for programmatic consumers (the companion script). Each line is parseable; `type` ∈ {`text`, `thinking`, `tool_call_start`, `tool_call_finish`, ...}. Use `jq -c 'select(.type=="text") | .part.text'` to extract assistant text only.
+- `< /dev/null` — close stdin explicitly. Without this, opencode can wait on stdin EOF and appear hung.
+- Prompt via `$(cat /tmp/prompt.txt)` — write the prompt to a file via a quoted-delimiter heredoc to dodge shell quoting traps and ARG_MAX risk. Same pattern as the `opencode-review` subagent uses internally.
+
+**Live tailing for debugging:**
+
+```bash
+# Watch heartbeat (per-event INFO logs)
+tail -f /tmp/review.err
+
+# Watch thinking + tool calls + text deltas as they arrive
+tail -f /tmp/review.out | jq -c 'select(.type | IN("thinking","tool_call_start","tool_call_finish","text")) | {type, text: (.part.text // .part.tool // ""), id: (.part.messageID // "")}'
+
+# Extract just the final assistant text (the review verdict) when done
+jq -r 'select(.type=="text") | .part.text' /tmp/review.out | tail -c 4000
+```
+
+**Recovery procedure when a review is hung:**
+
+1. Verify hang by checking the output file size: if no growth for >60s and the opencode log shows no progress, the run is genuinely stuck.
+2. Kill the process (`kill <pid>`).
+3. Re-dispatch with a different model from the same tier (e.g., substitute `volcengine-plan/glm-5.1` for `deepseek/deepseek-v4-pro` if the latter hangs).
+4. Note the substitution explicitly in the review verdict header so the model used is auditable.
+
+Plan 002 is expected to ship a `scripts/dispatch-review.sh` wrapper that automates hang detection (file-growth poll) and fallback-model retry, so this manual procedure becomes the exception rather than the norm.
+
 ## Development Workflow
 
 Follow `docs/development-workflow.md` exactly for every plan (Steps 1–6: Design → Plan → Build → Verify → Review → Ship). Do not skip steps or batch them. Key points:
@@ -123,9 +198,14 @@ Follow `docs/code-review.md` for the review process. Key points:
 
 ## Coding Agent
 
-**Claude Opus is the primary coding agent.** All implementation, debugging, refactoring, and coding tasks should be done by Claude (Opus model) — either directly or via subagents. Use the `superpowers:subagent-driven-development` skill for multi-task plan execution.
+**Claude is the primary coding agent.** Model selection within Claude follows a two-tier rule:
 
-Codex and opencode are *secondary* agents. Codex remains review-only in this workspace. opencode is review-only in plan 000 and becomes write-capable for selective rescue tasks in plan 001 — even after plan 001, Claude (Opus) remains the primary coding agent and opencode is a *secondary* agent for delegated rescue work, not the default.
+- **Sonnet — default for general coding tasks.** Routine implementation, straightforward refactors, applying review findings, writing tests against an existing pattern, doc/CHANGELOG updates, file renames, mechanical fixes, and any task where the approach is already settled. Sonnet is faster and cheaper; use it whenever the task is well-scoped.
+- **Opus — reserved for complex coding tasks.** Multi-file architectural changes, ambiguous problem framing, debugging deep failures across subsystems, plan-level work requiring trade-off judgment, novel concurrency / security / supervisor-style logic, or tasks where Sonnet has stalled or produced incorrect results. Switch to Opus when the task genuinely needs the deeper reasoning budget.
+
+Default to Sonnet; promote to Opus only when complexity warrants it. The user may pin a model with `/model` at any time — respect that override. Use the `superpowers:subagent-driven-development` skill for multi-task plan execution regardless of which Claude model is driving.
+
+Codex and opencode are *secondary* agents. Codex remains review-only in this workspace. opencode became write-capable in plan 001 via `/opencode:run` — Claude remains the primary coding agent and opencode is a *secondary* agent for delegated coding work where the user wants a different model's perspective on writing the code. Use `/opencode:run --yolo` (with explicit user consent) for auto-approve, or `/opencode:run` (no `--yolo`) to keep opencode's permission prompts in the loop in interactive contexts.
 
 ## Codex (GPT-5.5) — Review Only
 
@@ -138,14 +218,14 @@ Codex and opencode are *secondary* agents. Codex remains review-only in this wor
 
 Codex provides an independent second-model perspective (GPT-5.5) that catches issues Claude may miss. Codex review is non-optional for plans (alongside opencode); strongly recommended for everything else.
 
-Do NOT use Codex for implementation, debugging, refactoring, or any coding work. Those belong to Claude Opus.
+Do NOT use Codex for implementation, debugging, refactoring, or any coding work. Those belong to Claude (Sonnet for general tasks, Opus for complex ones — see "Coding Agent" above).
 
 ## Opencode
 
 opencode is being rolled out in this workspace as a third independent code-review and (eventually) coding agent, alongside Claude and Codex. The plugin lives at `plugins/opencode/` and is built up over phased plans:
 
-- **Phase 1 (plan 000, this plan):** read-only review only — `/opencode:review`, `/opencode:setup`, `opencode:opencode-review` subagent. Foreground execution. Used by the dual plan-review gate and code-review process.
-- **Phase 2 (plan 001):** write-capable rescue + background tasks — `/opencode:rescue`, `--background` execution, `/opencode:status` / `/opencode:result` / `/opencode:cancel`, `opencode:opencode-rescue` subagent.
+- **Phase 1 (plan 000, shipped):** read-only review — `/opencode:review`, `/opencode:setup`, `opencode:opencode-review` subagent. Foreground execution. Used by the dual plan-review gate and code-review process.
+- **Phase 2 (plan 001, this plan):** write-capable run + background tasks — `/opencode:run`, `--background` execution, `/opencode:status` / `/opencode:result` / `/opencode:cancel`, `opencode:opencode-run` subagent. Local install via `scripts/install-local.sh`.
 - **Phase 3 (plan 002):** adversarial-review + optional Stop-hook review gate.
 
 opencode runs whichever LLM the user has configured in `~/.config/opencode/opencode.json`. The plugin is model-agnostic — it never embeds a default model. The user's `~/.config/opencode/opencode.json` must define the models referenced in this workspace's review pipeline:
@@ -158,7 +238,7 @@ The pinned models give Plan reviews and Code reviews each a deliberate, reproduc
 
 Until plan 000 ships, opencode is invoked via the CLI: `opencode run --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool. After plan 000 ships, prefer `/opencode:review` for interactive use and `Agent({subagent_type: "opencode:opencode-review"})` for programmatic dispatch (e.g., the dual plan-review gate).
 
-Until plan 001 ships, opencode is review-only by capability — do not delegate coding tasks to it. After plan 001 ships, opencode-rescue can take write-capable tasks; Claude (Opus) remains the *primary* coding agent and opencode is a *secondary* agent for selective rescue.
+Until plan 001 ships, opencode is review-only by capability — do not delegate coding tasks to it. After plan 001 ships, opencode-run can take write-capable tasks; Claude remains the *primary* coding agent (Sonnet by default, Opus for complex tasks — see "Coding Agent" above) and opencode is a *secondary* agent for selective delegation.
 
 - **Plan review (BLOCKING — see "Plan review gate" above)** — every plan must pass an opencode review *in addition to* the Codex review before any code is written. Capture the verdict in the plan's `## Opencode review summary` section.
 - **Code review** — run opencode alongside `/codex:review` for branch-level review before PRs.

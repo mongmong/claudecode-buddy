@@ -24,7 +24,7 @@ export function runCompanion(args, env = {}) {
     // opencode binary) don't accidentally break the spawn of node itself.
     const child = spawn(
       process.execPath,
-      ["plugins/opencode/scripts/opencode-companion.mjs", ...args],
+      ["plugins/opencode/scripts/buddy.mjs", ...args],
       { env: { ...process.env, ...env } },
     );
     let stdout = "";

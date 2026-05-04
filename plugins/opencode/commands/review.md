@@ -32,7 +32,7 @@ The user's opencode config typically defines multiple models with different cost
 2. **Otherwise, list available models:**
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-companion.mjs" models
+node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" models
 ```
 
 3. The script prints one `provider/model-id` per line, default first. If the output starts with "config not found" or otherwise looks like an error (no `/` separator on any line), surface it to the user verbatim and stop without invoking review.
@@ -42,13 +42,13 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-companion.mjs" models
 Execution:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-companion.mjs" review --model "$CHOSEN_MODEL" "$ARGUMENTS"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" review --model "$CHOSEN_MODEL" "$ARGUMENTS"
 ```
 
 If the user-supplied `--model` path was taken (step 1), invoke instead WITHOUT the injected `--model`:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-companion.mjs" review "$ARGUMENTS"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" review "$ARGUMENTS"
 ```
 
 The companion's `parseReviewArgs` flat-maps `splitArgs` across every input token, so `["--model", "X", "--scope working-tree"]` (mixed multi-arg + quoted) parses correctly. Last-occurrence wins on duplicate flags.
