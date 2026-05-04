@@ -226,8 +226,9 @@ Each job record:
   "status": "running" | "completed" | "cancelled" | "failed" | "session-ended",
   "pid": 12345,
   "exit_code": 0 | null,
-  "stdout_path": ".claudecode-buddy/opencode/jobs/<id>.stdout",
-  "stderr_path": ".claudecode-buddy/opencode/jobs/<id>.stderr",
+  "stdout_path": "<absolute path to <project>/.claudecode-buddy/opencode/jobs/<id>.stdout>",
+  "stderr_path": "<absolute path to <project>/.claudecode-buddy/opencode/jobs/<id>.stderr>",
+  "events_path": "<absolute path to <project>/.claudecode-buddy/opencode/jobs/<id>.events>",
   "summary": "first line of opencode output (for status table)"
 }
 ```

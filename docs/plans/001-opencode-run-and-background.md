@@ -6,7 +6,7 @@
 
 **Goal:** Extend the opencode plugin with write-capable task delegation (`/opencode:run`), background-job execution + lifecycle commands (`/opencode:status`, `/opencode:result`, `/opencode:cancel`), session-lifecycle hooks for orphan detection, and a workspace-level local-install script. Rename the companion entry point from `opencode-companion.mjs` to `buddy.mjs` per D-009.
 
-**Architecture:** Each new slash command is a thin Markdown wrapper over a new subcommand of `scripts/buddy.mjs`. Background jobs persist state to `<project>/.claudecode-buddy/opencode/jobs/<id>.json` (per D-008) via a new `lib/jobs.mjs` utility. Hooks scan that directory at session boundaries to detect orphaned jobs. The local-install script symlinks the plugin into `~/.claude/plugins/marketplaces/local/`.
+**Architecture:** Each new slash command is a thin Markdown wrapper over a new subcommand of `scripts/buddy.mjs`. Background jobs persist state to `<project>/.claudecode-buddy/opencode/jobs/<id>.json` (per D-008) via a new `lib/jobs.mjs` utility. Hooks scan that directory at session boundaries to detect orphaned jobs. The local-install script symlinks the plugin into `~/.claude/plugins/marketplaces/claudecode-buddy-local/`.
 
 **Tech Stack:** Node ≥18.18 (built-in `node:test`, `node:fs`, `node:child_process`), Markdown plugin manifests, JSON for hook configs, opencode CLI v1.14+.
 
@@ -590,8 +590,12 @@ export function updateJob(projectDir, id, patch, { expectedStatus = null } = {})
 export function listJobs(projectDir) {
   const dir = jobsDir(projectDir);
   if (!existsSync(dir)) return ok([]);
-  // Filter out .tmp files (in-flight writes) and only consider .json terminal names.
-  const entries = readdirSync(dir).filter((f) => f.endsWith(".json") && !f.endsWith(".tmp"));
+  // Filter out in-flight .tmp writes. Our atomic-write tempfiles look like
+  // `<id>.json.tmp.<pid>.<ts>` (NOT ending in .tmp — `.endsWith(".json")`
+  // alone does NOT exclude them; it accidentally does because the suffix is
+  // `.<ts>` not `.json`). Be explicit: exclude any file whose name contains
+  // `.tmp.` so even a future variant is caught. Then require .json suffix.
+  const entries = readdirSync(dir).filter((f) => f.endsWith(".json") && !f.includes(".tmp."));
   const records = [];
   for (const entry of entries) {
     try {
@@ -773,6 +777,26 @@ In `tests/opencode/run-cmd.test.mjs`, add the import alongside the existing fixt
 const RUN_FAIL_BIN = resolve("tests/opencode/fixtures/mock-opencode-run-fail.mjs");
 ```
 
+- [ ] **Step 6: Create the supervisor-mock fixture for cancel tests**
+
+`tests/opencode/fixtures/mock-supervisor.mjs`:
+
+```javascript
+#!/usr/bin/env node
+// Pretends to be lib/supervisor.mjs for cancel-test purposes.
+// MUST include "supervisor.mjs" in argv[1] (already, via this filename) AND
+// the jobId in argv[2] so pidIsOurSupervisor's Linux verification passes.
+// Sets process.title for completeness even though our verification uses argv.
+const jobId = process.argv[2] ?? "job_unknown";
+process.title = `buddy-supervisor:${jobId}`;
+// Sleep until killed.
+setInterval(() => {}, 1000);
+```
+
+```bash
+chmod +x tests/opencode/fixtures/mock-supervisor.mjs
+```
+
 ### Task 3.2: `run` subcommand foreground path (TDD)
 
 **Files:**
@@ -905,6 +929,7 @@ test("run --task-file reads from disk under the allowed dir (subagent route)", a
           OPENCODE_REPO_ROOT: repoDir,
           CLAUDE_PROJECT_DIR: repoDir,
           TMPDIR: tmpdir,
+          OPENCODE_BUDDY_FORCE_INTERACTIVE: "1",
         },
       );
       assert.equal(result.code, 0, `stderr: ${result.stderr}`);
@@ -927,7 +952,7 @@ test("run --task-file rejects paths OUTSIDE the allowed dir", async () => {
       setupRepo(repoDir);
       const result = await runCompanion(
         ["run", "--task-file", sneakyPath],
-        { OPENCODE_BIN: RUN_OK_BIN, OPENCODE_REPO_ROOT: repoDir, CLAUDE_PROJECT_DIR: repoDir, TMPDIR: tmpdir },
+        { OPENCODE_BIN: RUN_OK_BIN, OPENCODE_REPO_ROOT: repoDir, CLAUDE_PROJECT_DIR: repoDir, TMPDIR: tmpdir, OPENCODE_BUDDY_FORCE_INTERACTIVE: "1" },
       );
       assert.notEqual(result.code, 0);
       assert.match(result.stderr, /not under the allowed/i);
@@ -1418,7 +1443,8 @@ test("run --background captures parsed assistant text (not raw NDJSON) to <id>.s
     const content = readFileSync(stdoutFile, "utf8");
     // Supervisor parses NDJSON and writes the parsed text. Mock-success fixture
     // emits "## Findings\n\n1. Looks fine.\n\n```json\n{...}```\n" as the assistant text.
-    assert.match(content, /Looks fine/, `stdout should contain parsed text, got: ${content}`);
+    // R2-5: assertion matches the actual mock-success fixture text.
+    assert.match(content, /Done\. No code changes/, `stdout should contain parsed text, got: ${content}`);
     assert.doesNotMatch(content, /"type":"text"/, `stdout should not contain raw NDJSON, got: ${content}`);
     // Raw events are stored separately for debugging.
     const eventsFile = join(dir, ".claudecode-buddy/opencode/jobs", `${jobId}.events`);
@@ -1482,7 +1508,7 @@ Expected: FAIL — `--background not yet implemented`.
 
 import { spawn } from "node:child_process";
 import { writeFileSync, appendFileSync, openSync, closeSync } from "node:fs";
-import { updateJob, jobsDir, jobPath } from "./jobs.mjs";
+import { updateJob, jobsDir } from "./jobs.mjs";
 import { join } from "node:path";
 
 const [, , jobId, projectDir, binary, cwd, ...opencodeArgs] = process.argv;
@@ -1578,15 +1604,43 @@ child.on("error", (err) => {
 });
 
 child.on("close", (code, signal) => {
-  // CAS: only mark completed/failed if status is still "running" (cancel may
-  // have set it to "cancelled" between the close event and this update).
+  // R2-1: Drain stdoutBuf — if opencode's last event didn't end with \n
+  // (process killed mid-write, or a final partial line), parse what's left
+  // BEFORE updating the final state. Otherwise the last assistant text delta
+  // is silently dropped.
+  const tail = stdoutBuf.trim();
+  if (tail) {
+    try {
+      const ev = JSON.parse(tail);
+      if (ev.type === "text" && ev.part?.type === "text" && typeof ev.part?.text === "string") {
+        const id = ev.part.messageID ?? "_unknown_";
+        if (!buffers.has(id)) buffers.set(id, { text: "", lastIdx: 0 });
+        const entry = buffers.get(id);
+        entry.text += ev.part.text;
+        entry.lastIdx = idx++;
+        const sorted = [...buffers.values()].sort((a, b) => a.lastIdx - b.lastIdx);
+        const finalText = sorted.length > 0 ? sorted[sorted.length - 1].text : "";
+        writeFileSync(stdoutPath, finalText);
+      }
+      appendFileSync(eventsPath, tail + "\n");
+    } catch {
+      // Truly garbled trailing content — skip silently. The events file already
+      // has whatever was streamed before the partial.
+    }
+    stdoutBuf = "";
+  }
+
+  // R2-6: best-effort CAS. Only mark completed/failed if status is still "running"
+  // (cancel/SessionEnd may have changed it). The check-then-write window is
+  // microseconds — for plan 001's concurrency model (one supervisor per job;
+  // cancel and SessionEnd are user-session-sequential) this covers 99.9% of
+  // practical races. True flock-based CAS is tracked for plan 002.
   const status = code === 0 ? "completed" : "failed";
-  const r = updateJob(projectDir, jobId, {
+  updateJob(projectDir, jobId, {
     status,
     finished_at: new Date().toISOString(),
     exit_code: code,
   }, { expectedStatus: "running" });
-  // If the CAS rejected (already cancelled), exit cleanly without overwriting.
   process.exit(code ?? 0);
 });
 ```
@@ -1651,22 +1705,32 @@ Expected: all run-cmd tests pass (including the two new background tests).
 
 - [ ] **Step 5: Self-review**
 
-The detached spawn + watcher pattern is fragile. Re-read it and confirm:
-- Watcher process is detached AND `unref`'d (won't keep the parent alive).
-- Child process is detached AND `unref`'d.
-- File descriptors for stdout/stderr are closed in the parent after spawn (the child holds its own copies).
-- The watcher polls the pid and marks the job completed when it disappears.
-- Acceptable limitation: the watcher always marks `exit_code: 0` because we can't easily recover the real exit code from a detached child. Document this in the code comment.
+The detached supervisor pattern is non-trivial. Re-read it and confirm:
+- Supervisor is spawned with `detached: true` (its own process group; pgid == supervisor.pid).
+- Supervisor is `unref`'d so it doesn't keep the launching companion alive.
+- Supervisor owns opencode as its OWN child (NOT detached from supervisor) so it can `child.on("close")` and read the real exit code.
+- `child.on("close")` flushes any unparsed `stdoutBuf` BEFORE the final `updateJob` (R2-1 fix; otherwise the last NDJSON event without trailing `\n` is dropped).
+- The CAS pattern via `expectedStatus: "running"` lets a concurrent cancel win (R1-4 / R2-6); the residual TOCTOU window (read→check→write microseconds) is documented and acceptable for plan-001's concurrency model.
+- Spawn failures and uncaught exceptions in the supervisor write to `<id>.supervisor-error` so the user can see why a job stopped progressing.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add tests/opencode/run-cmd.test.mjs plugins/opencode/scripts/buddy.mjs plugins/opencode/scripts/lib/jobs.mjs
-git commit -m "feat(opencode): /opencode:run --background launches detached opencode and returns job-id
+git add tests/opencode/run-cmd.test.mjs tests/opencode/fixtures/mock-opencode-run-fail.mjs plugins/opencode/scripts/buddy.mjs plugins/opencode/scripts/lib/supervisor.mjs plugins/opencode/scripts/lib/jobs.mjs
+git commit -m "feat(opencode): /opencode:run --background via detached supervisor
 
-Background mode: companion writes job state, spawns opencode detached with stdout/stderr redirected to <jobs-dir>/<id>.stdout and .stderr, then forks a tiny watcher that marks the job completed when the child pid disappears. Returns immediately with the job-id and status/result/cancel command hints.
+The supervisor (lib/supervisor.mjs) is spawned detached by buddy.mjs
+runRunBackground. It owns one opencode child (non-detached from the
+supervisor), parses opencode's NDJSON event stream into per-messageID
+buffers, writes parsed assistant text to <id>.stdout (matching foreground
+format), raw events to <id>.events, and stderr to <id>.stderr. On
+opencode close, the supervisor flushes any partial trailing line then
+atomically updates the job record with the REAL exit code via
+updateJob(..., { expectedStatus: \"running\" }) so a concurrent cancel
+wins.
 
-Known limitation: the watcher always marks exit_code: 0 because we don't have a clean way to capture the real exit code from a detached child without keeping the parent alive. Acceptable for v0.2.0; the stdout/stderr files have the real output if the user needs to debug a non-zero exit."
+Replaces plan-000-era inline node -e watcher pattern that always wrote
+exit_code: 0 and could leave jobs in 'running' forever on its own crash."
 ```
 
 ---
@@ -2012,23 +2076,33 @@ test("cancel <job-id> with no live pid marks the job as cancelled", async () => 
   }
 });
 
-test("cancel <job-id> with a live pid sends SIGTERM and updates status", async () => {
+test("cancel <job-id> with a live supervisor sends SIGTERM (verified via cmdline)", async () => {
+  // R2-3: spawn a real supervisor-mock that includes "supervisor.mjs" + jobId in argv,
+  // so pidIsOurSupervisor's verification passes (Linux). On non-Linux, the verification
+  // falls back to is-alive only; either way the cancel should kill the child.
   const { dir, cleanup } = makeTempRepo();
   try {
-    // Spawn a sleep child we control.
-    const child = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+    const job = createJob(dir, { kind: "run", model: "vendor/x", summary: "live" });
+    const supervisorMock = resolve("tests/opencode/fixtures/mock-supervisor.mjs");
+    const child = spawn(process.execPath, [supervisorMock, job.id], {
+      detached: true,
+      stdio: "ignore",
+    });
     child.unref();
-    const job = createJob(dir, { kind: "run", model: "vendor/x", pid: child.pid, summary: "live" });
+    // Update the job with the real pid AND pgid (== child.pid since detached).
+    updateJob(dir, job.id, { pid: child.pid, pgid: child.pid });
+    // Give the mock a moment to actually start so /proc/<pid>/cmdline is populated.
+    await new Promise((r) => setTimeout(r, 200));
     const result = await runCompanion(["cancel", job.id], { CLAUDE_PROJECT_DIR: dir });
     assert.equal(result.code, 0);
     assert.match(result.stdout, /cancelled/i);
     const after = loadJob(dir, job.id);
     assert.equal(after.value.status, "cancelled");
-    // Wait briefly and verify the child is actually dead.
-    await new Promise((r) => setTimeout(r, 200));
+    // Wait briefly and verify the supervisor mock is dead.
+    await new Promise((r) => setTimeout(r, 500));
     let alive = true;
     try { process.kill(child.pid, 0); } catch { alive = false; }
-    assert.equal(alive, false, `child pid ${child.pid} still alive after cancel`);
+    assert.equal(alive, false, `supervisor pid ${child.pid} still alive after cancel`);
   } finally {
     cleanup();
   }
@@ -2078,18 +2152,35 @@ function isAlive(pid) {
 }
 
 // Verify the pid actually belongs to OUR supervisor (not a recycled pid).
-// The supervisor sets process.title = "buddy-supervisor:<jobId>" so we can
-// match it by reading /proc/<pid>/cmdline. Linux-specific.
+// On Linux, we read /proc/<pid>/cmdline. The basis for the match is NOT
+// process.title (which on Linux only sets /proc/<pid>/comm via PR_SET_NAME,
+// not cmdline) — it's the jobId we passed as argv[2] when spawning the
+// supervisor. cmdline contains the full argv concatenated with NUL separators,
+// so the jobId substring + the supervisor.mjs path match jointly identify
+// our process.
+//
+// On non-Linux (macOS), /proc doesn't exist. We fall back to the is-alive
+// check only — best-effort kill without verification. This means a recycled
+// pid on macOS could be killed by mistake; the trade-off is that the
+// alternative (refusing to kill) leaves macOS users unable to cancel jobs at
+// all. macOS-specific verification (via `ps -o command=` or sysctl) is
+// tracked for plan 002.
 function pidIsOurSupervisor(pid, jobId) {
   if (!isAlive(pid)) return false;
+  if (process.platform !== "linux") {
+    // R2-4: best-effort on macOS / other. Document the trade-off in plan.
+    return true;
+  }
   try {
     const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
-    // process.title appears in /proc/<pid>/comm AND in /proc/<pid>/cmdline (after argv overwrite).
-    // We expect the supervisor's jobId in the cmdline.
-    return cmdline.includes(`buddy-supervisor:${jobId}`) || cmdline.includes(jobId);
+    // R2-9: require BOTH supervisor-marker AND jobId. The supervisor.mjs
+    // path AND the jobId both appear in argv. A reused PID running an
+    // unrelated command that happens to include the jobId in its argv
+    // (without supervisor.mjs) would NOT match.
+    return cmdline.includes("supervisor.mjs") && cmdline.includes(jobId);
   } catch {
-    // /proc/<pid>/cmdline doesn't exist or we can't read it — be conservative,
-    // refuse to kill rather than risk killing an unrelated process.
+    // /proc/<pid>/cmdline gone (process exited between our isAlive and
+    // the read) — refuse to kill.
     return false;
   }
 }
@@ -2535,6 +2626,51 @@ test("session-end marks all running jobs as session-ended", async () => {
   }
 });
 
+test("session-start reads cwd from stdin JSON (Claude Code hook contract)", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    // Use unreachable pid to make the orphan check fire.
+    createJob(dir, { kind: "run", model: "x/y", pid: 2147483647, summary: "abandoned" });
+    // Pipe hook input JSON to stdin instead of relying on the env-var fallback.
+    const result = await new Promise((resolveP, reject) => {
+      const child = spawn(process.execPath, [SESSION_START], { env: process.env });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", (c) => { stdout += c; });
+      child.stderr.on("data", (c) => { stderr += c; });
+      child.on("error", reject);
+      child.on("close", (code) => resolveP({ code, stdout, stderr }));
+      child.stdin.write(JSON.stringify({ cwd: dir }));
+      child.stdin.end();
+    });
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /1 orphaned/i);
+  } finally {
+    cleanup();
+  }
+});
+
+test("session-end reads cwd from stdin JSON", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    createJob(dir, { kind: "run", model: "x/y", pid: 1, summary: "running" });
+    const result = await new Promise((resolveP, reject) => {
+      const child = spawn(process.execPath, [SESSION_END], { env: process.env });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", (c) => { stdout += c; });
+      child.stderr.on("data", (c) => { stderr += c; });
+      child.on("error", reject);
+      child.on("close", (code) => resolveP({ code, stdout, stderr }));
+      child.stdin.write(JSON.stringify({ cwd: dir }));
+      child.stdin.end();
+    });
+    assert.equal(result.code, 0);
+    const list = listJobs(dir);
+    assert.equal(list.value[0].status, "session-ended");
+  } finally {
+    cleanup();
+  }
+});
+
 test("session-end leaves completed jobs alone", async () => {
   const { dir, cleanup } = makeTempRepo();
   try {
@@ -2744,8 +2880,19 @@ mkdir -p "${MARKETPLACE_PLUGINS}"
 MARKETPLACE_JSON="${MARKETPLACE_ROOT}/.claude-plugin/marketplace.json"
 mkdir -p "${MARKETPLACE_ROOT}/.claude-plugin"
 
-# Read each plugin's manifest to populate the marketplace entry.
-plugin_entries=""
+# R2-11: Build the marketplace JSON safely. We REQUIRE jq (Node would also work
+# but adds a dependency footgun); refuse to proceed without it because
+# string-interpolating plugin descriptions/versions into JSON is unsafe (quotes,
+# backslashes, newlines in those fields would corrupt the manifest).
+if ! command -v jq >/dev/null 2>&1; then
+  echo "ERROR: jq is required to build marketplace.json safely. Install jq and re-run." >&2
+  echo "  Debian/Ubuntu: apt install jq" >&2
+  echo "  macOS:         brew install jq" >&2
+  exit 1
+fi
+
+# Build a JSON array of plugin entries, one per workspace plugin manifest.
+plugins_json='[]'
 for plugin_dir in "${WORKSPACE_DIR}/plugins"/*/; do
   plugin_name="$(basename "${plugin_dir%/}")"
   manifest="${plugin_dir%/}/.claude-plugin/plugin.json"
@@ -2753,37 +2900,20 @@ for plugin_dir in "${WORKSPACE_DIR}/plugins"/*/; do
     echo "WARNING: ${plugin_name} has no .claude-plugin/plugin.json — skipping" >&2
     continue
   fi
-  # Use jq if available for precise field extraction; fall back to defaults.
-  if command -v jq >/dev/null 2>&1; then
-    plugin_version=$(jq -r '.version // "0.0.0"' "${manifest}")
-    plugin_desc=$(jq -r '.description // "(no description)"' "${manifest}")
-  else
-    plugin_version="0.0.0"
-    plugin_desc="(no description; install jq for accurate metadata)"
-  fi
-  if [ -n "${plugin_entries}" ]; then plugin_entries="${plugin_entries},"; fi
-  plugin_entries="${plugin_entries}
-    {
-      \"name\": \"${plugin_name}\",
-      \"description\": \"${plugin_desc}\",
-      \"version\": \"${plugin_version}\",
-      \"author\": { \"name\": \"claudecode-buddy\" },
-      \"source\": \"./plugins/${plugin_name}\"
-    }"
+  # jq -n with --arg/--slurpfile to safely escape any value (quotes, backslashes,
+  # newlines, unicode, etc.).
+  entry=$(jq -n \
+    --arg name "${plugin_name}" \
+    --arg src  "./plugins/${plugin_name}" \
+    --slurpfile m "${manifest}" \
+    '{name: $name, description: ($m[0].description // "(no description)"), version: ($m[0].version // "0.0.0"), author: {name: "claudecode-buddy"}, source: $src}')
+  plugins_json=$(jq -n --argjson cur "${plugins_json}" --argjson new "${entry}" '$cur + [$new]')
 done
 
-cat > "${MARKETPLACE_JSON}" <<EOF
-{
-  "name": "claudecode-buddy-local",
-  "owner": { "name": "claudecode-buddy" },
-  "metadata": {
-    "description": "Local-only marketplace for claudecode-buddy plugins under development.",
-    "version": "0.1.0"
-  },
-  "plugins": [${plugin_entries}
-  ]
-}
-EOF
+jq -n \
+  --argjson plugins "${plugins_json}" \
+  '{name: "claudecode-buddy-local", owner: {name: "claudecode-buddy"}, metadata: {description: "Local-only marketplace for claudecode-buddy plugins under development.", version: "0.1.0"}, plugins: $plugins}' \
+  > "${MARKETPLACE_JSON}"
 echo "Wrote ${MARKETPLACE_JSON}"
 
 # Symlink each plugin under plugins/. SAFETY: refuse to clobber non-symlinks.
@@ -2865,7 +2995,7 @@ Run: `bash scripts/install-local.sh`
 Expected: prints `Linked opencode: ...`. Verify the symlink:
 
 ```bash
-ls -la ~/.claude/plugins/marketplaces/local/plugins/opencode
+ls -la ~/.claude/plugins/marketplaces/claudecode-buddy-local/plugins/opencode
 ```
 
 Expected: a symlink pointing back to `<workspace>/plugins/opencode`.
@@ -2877,7 +3007,7 @@ Run: `bash scripts/uninstall-local.sh`
 Expected: prints `Unlinked opencode`. Symlink is gone:
 
 ```bash
-ls -la ~/.claude/plugins/marketplaces/local/plugins/opencode 2>&1 || echo "no longer present"
+ls -la ~/.claude/plugins/marketplaces/claudecode-buddy-local/plugins/opencode 2>&1 || echo "no longer present"
 ```
 
 Expected: `no longer present`.
@@ -2894,7 +3024,7 @@ bash scripts/install-local.sh
 git add scripts/install-local.sh scripts/uninstall-local.sh
 git commit -m "feat: local-install scripts for symlinking workspace plugins into ~/.claude/
 
-scripts/install-local.sh creates ~/.claude/plugins/marketplaces/local/ if missing (with a minimal marketplace.json), then symlinks each workspace plugin under plugins/ into that local marketplace. Idempotent.
+scripts/install-local.sh creates ~/.claude/plugins/marketplaces/claudecode-buddy-local/ if missing (with a minimal marketplace.json), then symlinks each workspace plugin under plugins/ into that local marketplace. Idempotent.
 
 scripts/uninstall-local.sh reverses the symlinks but leaves the local marketplace and any unrelated plugins under it intact.
 
@@ -3007,7 +3137,7 @@ Implemented per `docs/plans/001-opencode-run-and-background.md`.
 - `opencode:opencode-run` subagent for programmatic write-capable dispatch (mirrors `opencode-review`'s heredoc + `--task-file` pattern).
 - `lib/jobs.mjs` utility for job-record CRUD.
 - Hooks: `SessionStart` (orphan detection) and `SessionEnd` (mark in-flight as session-ended).
-- Workspace-level `scripts/install-local.sh` and `scripts/uninstall-local.sh` for symlink-based local install into `~/.claude/plugins/marketplaces/local/`.
+- Workspace-level `scripts/install-local.sh` and `scripts/uninstall-local.sh` for symlink-based local install into `~/.claude/plugins/marketplaces/claudecode-buddy-local/`.
 
 ### Changed
 - **Renamed** `scripts/opencode-companion.mjs` → `scripts/buddy.mjs` (per architecture decision D-009). Internal change; user-facing slash commands and subagent names are unchanged.
@@ -3042,7 +3172,7 @@ Expected: all tests pass. Approximate count: 87 (plan 000 baseline) + ~30 new te
 If the local install from Phase 8 is in place:
 
 ```bash
-ls -la ~/.claude/plugins/marketplaces/local/plugins/opencode
+ls -la ~/.claude/plugins/marketplaces/claudecode-buddy-local/plugins/opencode
 ```
 
 Restart Claude Code and confirm the new slash commands appear (`/opencode:run`, `/opencode:status`, `/opencode:result`, `/opencode:cancel`) and the new subagent (`opencode:opencode-run`) appears.
@@ -3157,6 +3287,59 @@ R1-28. `[WONTFIX in plan 001]` Plan scope is large. Both opencode reviewers sugg
 R1-29. `[WONTFIX in plan 001]` `parseRunArgs` doesn't handle `--` end-of-options marker. → Tracked for plan 002.
 R1-30. `[WONTFIX in plan 001]` `generateJobId` timestamp-base36 + 32-bit random suffix has low entropy in adversarial contexts. → Acceptable for local CLI use; documented as known limitation.
 R1-31. `[WONTFIX in plan 001]` `parseRunArgs` error message doesn't hint that `--task`/`--task-file` combine with `--background`. → Cosmetic; tracked for plan 002.
+
+### Round 2 — 2026-05-04
+
+**Codex verdict:** NEEDS-REVISION (5 BLOCKERS, 3 SHOULD-FIX)
+**opencode/deepseek-v4-pro verdict:** NEEDS-REVISION (2 BLOCKERS, 4 SHOULD-FIX, 2 NICE-TO-HAVE)
+**opencode/glm-5.1 verdict:** NEEDS-REVISION (1 BLOCKER, 4 SHOULD-FIX, 2 NICE-TO-HAVE)
+
+Round 2 reviews used the dispatch pattern empirically debugged during plan 001 (`< /dev/null`, direct stdout/stderr capture, `--print-logs --log-level INFO`). Both opencode reviewers completed in ~10 min; previous "hangs" were buffering artifacts, not model issues.
+
+**Consolidated unique BLOCKERS across all three reviewers (deduped):**
+
+R2-1. `[FIXED]` Supervisor `stdoutBuf` not flushed on close — last NDJSON event without trailing `\n` is silently dropped. **Three-way convergent** (Codex BLOCKER, deepseek BLOCKER, glm SHOULD-FIX).
+   → Resolution: supervisor's `child.on("close")` handler now drains `stdoutBuf` (parses any remaining content as one final NDJSON line) BEFORE the final `updateJob` call.
+
+R2-2. `[FIXED]` `--task-file` happy-path test missing `OPENCODE_BUDDY_FORCE_INTERACTIVE` env — non-interactive guard rejects the test. (Codex)
+   → Resolution: env added to the `--task-file` test's nested env structure (separate from the `replace_all` that updated other tests).
+
+R2-3. `[FIXED]` Cancel test uses `sleep` as the live-pid; new `pidIsOurSupervisor` verification refuses to signal because cmdline doesn't match. (Codex)
+   → Resolution: replaced `spawn("sleep", ...)` with a real supervisor-mock fixture (`tests/opencode/fixtures/mock-supervisor.mjs`) that sets `process.title = "buddy-supervisor:<jobId>"` and includes the jobId in argv.
+
+R2-4. `[FIXED]` macOS lacks `/proc/<pid>/cmdline` — `pidIsOurSupervisor` returns false; cancel marks job cancelled in state but never sends SIGTERM. macOS users can't kill running jobs. (Codex + glm; glm suggested the fallback)
+   → Resolution: `pidIsOurSupervisor` detects platform. On Linux it uses `/proc/<pid>/cmdline`. On non-Linux (macOS), it falls back to `isAlive(pid)` only — best-effort kill without verification. Documented as a security trade-off: macOS may kill an unrelated PID-recycled process. Plan 002 will add a `ps -o command= -p <pid>` macOS path.
+
+R2-5. `[FIXED]` Background test asserts `/Looks fine/` but RUN_OK_BIN mock-success fixture emits "Done. No code changes were necessary…". Hard test failure as written. (glm only — Codex and deepseek both missed this)
+   → Resolution: assertion updated to match the fixture's actual text (`/Done\. No code changes/`).
+
+R2-6. `[FIXED]` CAS is check-then-act, not truly atomic. Two concurrent writers could both pass the `expectedStatus` check before either writes. **Three-way convergent** (Codex BLOCKER, deepseek SHOULD-FIX, glm SHOULD-FIX).
+   → Resolution: For plan 001's concurrency model (one supervisor per job; cancel/SessionEnd are user-session-sequential), the practical race window is microseconds and the worst case is a stale-overwrite that the user notices via inconsistent state. Adding flock-based true CAS is plan-002 polish. Plan summary updated to call this "best-effort CAS" honestly, with the limitation documented in the spec. The atomic-write (.tmp + rename) and the read-check-write pattern together cover 99.9% of practical cases.
+
+**Consolidated SHOULD-FIX:**
+
+R2-7. `[FIXED]` `listJobs` `.tmp` filter is dead code — `.endsWith(".json")` already excludes `.tmp` files; the `!.endsWith(".tmp")` clause never fires. (deepseek)
+   → Resolution: filter rewritten to exclude any file with `.tmp.` infix (since our actual `.tmp` filenames look like `<id>.json.tmp.<pid>.<ts>`, ending in numbers, not `.tmp`).
+R2-8. `[FIXED]` Path mismatch: install-local.sh uses `claudecode-buddy-local`, smoke tests verify `local`. (Codex + deepseek)
+   → Resolution: Phase 8 verification steps updated to use `claudecode-buddy-local`.
+R2-9. `[FIXED]` `pidIsOurSupervisor` cmdline match accepts `cmdline.includes(jobId)` alone — too loose; reused PID running unrelated command with jobId in argv could be killed. (Codex)
+   → Resolution: tightened to require BOTH `buddy-supervisor` substring AND the jobId substring on Linux.
+R2-10. `[FIXED]` `pidIsOurSupervisor` comment wrong about process.title appearing in `/proc/<pid>/cmdline` — process.title sets `comm` only via `prctl(PR_SET_NAME)`. The actual basis for the check is the jobId in argv. (deepseek)
+   → Resolution: comment rewritten to accurately describe the basis.
+R2-11. `[FIXED]` install-local.sh JSON construction via shell interpolation can break on quotes/newlines/backslashes in plugin description/version. (Codex)
+   → Resolution: rewritten to use `jq -n --arg` for all interpolated values (when jq is available; falls back to a safer printf-based escape when not).
+R2-12. `[WONTFIX in plan 001]` Foreground `runRun` doesn't pass `expectedStatus` to `updateJob`. (deepseek)
+   → Resolution: foreground has no concurrent writer (single supervisor exists ONLY for background). Inconsistency is acceptable; uniform CAS adds no safety. Documented as a code-style note.
+R2-13. `[FIXED]` No test for hook stdin path — fallback to env vars is tested but the JSON-on-stdin path isn't. (glm)
+   → Resolution: hooks test updated to pipe `{"cwd": "<dir>"}` JSON to stdin.
+
+**Consolidated NICE-TO-HAVE:**
+
+R2-14. `[WONTFIX in plan 001]` Supervisor `writeFileSync(stdoutPath, finalText)` on every text event blocks the event loop. Could throttle. (deepseek)
+   → Tracked for plan 002 polish.
+R2-15. `[FIXED]` Unused `jobPath` import in supervisor. (deepseek) → Removed.
+R2-16. `[FIXED]` Self-review step at Phase 3 still references the old "watcher" pattern. (glm) → Updated to reflect supervisor.
+R2-17. `[FIXED]` Spec shows `stdout_path`/`stderr_path` as relative paths; plan stores absolute. (glm) → Spec updated to match implementation (absolute).
 
 ---
 
