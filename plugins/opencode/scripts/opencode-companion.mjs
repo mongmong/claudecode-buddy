@@ -82,10 +82,10 @@ function parsePromptArgs(rawArgs) {
     const a = argv[i];
     if (a === "--prompt-file") {
       promptFile = argv[++i];
-      if (!promptFile) return { ok: false, error: "--prompt-file requires a path argument" };
+      if (promptFile === undefined) return { ok: false, error: "--prompt-file requires a path argument" };
     } else if (a === "--model") {
       model = argv[++i];
-      if (!model) return { ok: false, error: "--model requires a provider/model argument" };
+      if (model === undefined) return { ok: false, error: "--model requires a provider/model argument" };
     } else if (a === "--stdin") {
       return {
         ok: false,

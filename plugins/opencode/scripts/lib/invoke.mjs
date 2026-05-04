@@ -56,6 +56,10 @@ export function invokeOpencode({
       return;
     }
 
+    // We never write to opencode's stdin. Close it immediately so opencode
+    // doesn't hang waiting for EOF if any future version reads stdin.
+    try { child.stdin.end(); } catch {}
+
     let stdout = "";
     let stderr = "";
     let timedOut = false;
