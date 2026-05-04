@@ -17,8 +17,15 @@ Explore the problem space before committing to an approach.
 
 **Output:** One of the following, depending on complexity:
 - **Verbal alignment** — for simple, well-defined tasks. Proceed directly to Plan.
-- **Straight to plan** — when brainstorming produces a concrete design (components, file lists, phases, testing strategy). No spec needed.
-- **Design spec** in `docs/specs/` — only for large, novel, or cross-cutting designs that will be referenced by multiple plans or need a standalone reference document.
+- **Straight to plan** — when brainstorming produces a concrete design (components, file lists, phases, testing strategy) and there are no architectural decisions or ambiguities to record. No spec needed.
+- **Design spec** in `docs/specs/` — only when the work introduces or refines an *architectural* decision or resolves a cross-cutting *ambiguity* that other plans will need to respect. Specs hold the long-lived "what is this system shaped like, and why?". They do NOT hold execution detail (file lists, phase order, code blocks, test cases) — that belongs in the plan. A new plan touching an existing spec amends the spec inline rather than starting a new file; specs evolve over time as plans flesh out previously-sketched sections.
+
+**Rule of thumb:**
+- Architectural decision or cross-cutting ambiguity? → spec.
+- Execution-level detail (which files, what code, what tests)? → plan.
+- Both? → amend the spec, then write the plan referencing the updated spec.
+
+`docs/architecture/decisions.md` is the *index* of cross-cutting decisions (one-line entries per decision); the full design context for each decision lives in the relevant spec.
 
 **Skip when:** The task is well-defined with an obvious approach (e.g., "add slash command X to plugin Y").
 

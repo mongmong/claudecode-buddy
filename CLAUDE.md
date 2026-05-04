@@ -75,7 +75,14 @@ For substantial code changes — new plugins, new commands, runner refactors, ma
 
 **Execution plans** (phased implementation with file lists and verification steps) go in `docs/plans/`. Numbered sequentially (000, 001, ..., 100, 101, ...). Sub-documents use letter suffixes (106a, 106b).
 
-**Design specs** go in `docs/specs/` — but only for large, novel, or cross-cutting designs that need a standalone reference document. When brainstorming produces a concrete design (components, file lists, phases decided), skip the spec and go straight to an execution plan in `docs/plans/`.
+**Design specs** go in `docs/specs/` — only when the work introduces or refines an *architectural* decision or resolves a cross-cutting *ambiguity* that other plans will need to respect. Specs hold the long-lived "what is this system shaped like, and why?". They do NOT hold execution detail (file lists, phase order, code blocks, test cases) — that belongs in the plan. A new plan touching an existing spec amends the spec inline rather than starting a new file.
+
+**Rule of thumb:**
+- Architectural decision or cross-cutting ambiguity? → spec.
+- Execution-level detail (which files, what code, what tests)? → plan.
+- Both? → amend the spec, then write the plan referencing the updated spec.
+
+`docs/architecture/decisions.md` is the *index* of cross-cutting decisions (one-line entries); the full design context lives in the relevant spec.
 
 Before writing a new plan, review existing plans in `docs/plans/` for reusable patterns and architectural decisions that must be respected. Avoid introducing duplicate code — reuse existing implementations and keep logic in a single source of truth.
 
