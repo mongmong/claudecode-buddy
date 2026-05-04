@@ -306,7 +306,7 @@ switch (subcommand) {
     break;
   default:
     process.stderr.write(
-      `Unknown subcommand: ${subcommand ?? "(none)"}.\nUsage: opencode-companion <setup|models|review|prompt> [args...]\n`,
+      `Unknown subcommand: ${subcommand ?? "(none)"}.\nUsage: buddy <setup|models|review|prompt> [args...]\n`,
     );
     process.exit(2);
 }

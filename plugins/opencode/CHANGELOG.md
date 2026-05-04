@@ -11,7 +11,7 @@ Implemented per `docs/plans/000-opencode-plugin-v1-scaffold.md`.
 - `/opencode:setup` slash command.
 - `opencode:opencode-review` subagent for programmatic dispatch (free-form prompt forwarding via heredoc + temp file under `$TMPDIR/opencode-prompts/run-XXXXXX/`, with defense-in-depth path validation).
 - Internal `opencode-cli-runtime` skill.
-- Node companion script (`scripts/opencode-companion.mjs`) wrapping `opencode run --format json`. Subcommands: `setup`, `models`, `review`, `prompt`.
+- Node companion script (`scripts/buddy.mjs`) wrapping `opencode run --format json`. Subcommands: `setup`, `models`, `review`, `prompt`.
 - Hybrid output convention — Markdown findings + fenced JSON trailer for the verdict signal.
 - `schemas/review-trailer.schema.json` documenting the trailer shape.
 - Workspace-level `tests/` harness using `node:test`, with mock fixtures for the opencode binary and a gated end-to-end suite (`OPENCODE_E2E=1`).

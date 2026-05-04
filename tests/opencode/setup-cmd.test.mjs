@@ -43,12 +43,12 @@ test("companion with no subcommand prints usage to stderr and exits 2", async ()
   const result = await runCompanion([], {});
   assert.equal(result.code, 2);
   assert.match(result.stderr, /Unknown subcommand/i);
-  assert.match(result.stderr, /Usage: opencode-companion/i);
+  assert.match(result.stderr, /Usage: buddy/i);
 });
 
 test("companion with unknown subcommand prints usage to stderr and exits 2", async () => {
   const result = await runCompanion(["bogus"], {});
   assert.equal(result.code, 2);
   assert.match(result.stderr, /Unknown subcommand: bogus/);
-  assert.match(result.stderr, /Usage: opencode-companion/i);
+  assert.match(result.stderr, /Usage: buddy/i);
 });
