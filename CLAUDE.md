@@ -118,14 +118,43 @@ opencode runs occasionally hang (model API unresponsive, rate limits, network is
 
 **CPU usage is NOT a reliable signal** — LLM API calls are network-bound and consume ~0% CPU while waiting on the model.
 
-**Recommended dispatch pattern (avoids buffering the heartbeat):**
+**Recommended dispatch pattern (avoids buffering the heartbeat AND captures thinking + tool calls for debugging):**
 
 ```bash
 # WRONG — `| tail` buffers; you can't see incremental events.
 opencode run --model X --dangerously-skip-permissions "..." 2>&1 | tail -200
 
-# RIGHT — direct stdout/stderr capture. Files grow as opencode streams events.
-opencode run --model X --print-logs --log-level INFO --format json --dangerously-skip-permissions "..." > /tmp/review.out 2> /tmp/review.err
+# RIGHT — direct stdout/stderr capture, thinking enabled, stdin closed.
+opencode run \
+  --model X \
+  --thinking \
+  --print-logs --log-level INFO \
+  --format json \
+  --dangerously-skip-permissions \
+  "$(cat /tmp/prompt.txt)" \
+  < /dev/null \
+  > /tmp/review.out 2> /tmp/review.err
+```
+
+Why each flag matters:
+
+- `--thinking` — emits the model's internal reasoning as `thinking`-type events in the NDJSON stream. Without this, you only see the final answer; with it, you can debug *why* the model arrived at a given conclusion (or stalled). Stdout NDJSON includes `thinking` events alongside `text` events.
+- `--print-logs --log-level INFO` — emits per-event log lines to **stderr** (`message.part.delta publishing`, etc.) so the err-file growth is the heartbeat. Without this, the only signal is stdout, which buffers per assistant message.
+- `--format json` — raw NDJSON event stream. Each line is parseable; thinking, text, tool calls each have their own event type. Use `jq -c 'select(.type | IN("thinking","tool_call_start","text"))'` to filter.
+- `< /dev/null` — close stdin explicitly. Without this, opencode can wait on stdin EOF and appear hung.
+- Prompt via `$(cat /tmp/prompt.txt)` — write the prompt to a file via a quoted-delimiter heredoc to dodge shell quoting traps and ARG_MAX risk. Same pattern as the `opencode-review` subagent uses internally.
+
+**Live tailing for debugging:**
+
+```bash
+# Watch heartbeat (per-event INFO logs)
+tail -f /tmp/review.err
+
+# Watch thinking + tool calls + text deltas as they arrive
+tail -f /tmp/review.out | jq -c 'select(.type | IN("thinking","tool_call_start","tool_call_finish","text")) | {type, text: (.part.text // .part.tool // ""), id: (.part.messageID // "")}'
+
+# Extract just the final assistant text (the review verdict) when done
+jq -r 'select(.type=="text") | .part.text' /tmp/review.out | tail -c 4000
 ```
 
 **Recovery procedure when a review is hung:**
