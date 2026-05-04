@@ -5,8 +5,8 @@ This workspace builds Claude Code plugins. The first plugin is `opencode` — a 
 ## CRITICAL RULES (never skip)
 
 - **Always create a feature branch** before implementation. Never commit directly to main. Use `git checkout -b feature/plan-NNN-description`.
-- **Always dispatch Codex AND opencode plan review before any implementation.** After saving a plan to `docs/plans/`, dispatch `codex:codex-rescue` AND run an opencode review (after plan 000 ships: dispatch the `opencode:opencode-review` subagent via the `Agent` tool with a focused review prompt; before plan 000 ships: `opencode run --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool). **Do NOT begin implementation until Claude, Codex, AND opencode agree** on the plan. If either reviewer flags blockers, revise the plan and re-dispatch BOTH reviews on the revised plan (so both verdicts apply to the final version). Iterate until all three concur. Capture both verdicts in the plan's `## Codex review summary` and `## Opencode review summary` sections.
-- **Always code review** before creating a PR. Run BOTH `/codex:review` and an opencode review pass; write findings (tagged `[codex]` and `[opencode]`) to the plan file's `## Code Review` section.
+- **Always dispatch Codex AND opencode plan review before any implementation.** After saving a plan to `docs/plans/`, dispatch `codex:codex-rescue` (Codex on gpt-5.5) AND run an opencode review pinned to model `deepseek/deepseek-v4-pro` (after plan 000 ships: dispatch the `opencode:opencode-review` subagent via the `Agent` tool with a focused review prompt and `--model deepseek/deepseek-v4-pro`; before plan 000 ships: `opencode run --model deepseek/deepseek-v4-pro --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool). **Do NOT begin implementation until Claude, Codex, AND opencode agree** on the plan. If either reviewer flags blockers, revise the plan and re-dispatch BOTH reviews on the revised plan (so both verdicts apply to the final version). Iterate until all three concur. Capture both verdicts in the plan's `## Codex review summary` and `## Opencode review summary` sections.
+- **Always code review** before creating a PR. Run THREE independent reviews: `/codex:review` (Codex on gpt-5.5), opencode pinned to model `deepseek/deepseek-v4-flash`, and opencode pinned to model `volcengine-plan/glm-5.1`. Write findings (tagged `[codex]`, `[opencode:deepseek-v4-flash]`, `[opencode:glm-5.1]`) to the plan file's `## Code Review` section.
 - **Always write a post-execution report** in the plan file before shipping.
 - **Always run the full test suite** before pushing. Do not push with failing tests.
 
@@ -92,7 +92,7 @@ Every plan — new or revised — must pass BOTH a Codex review AND an opencode 
 1. **Save the plan to `docs/plans/`** (uncommitted is fine — reviewers read from disk).
 2. **Dispatch reviews in parallel:**
    - `codex:codex-rescue` with the plan path and explicit review questions (blockers, hidden assumptions, scope, ordering, missing risks). Keep the prompt focused — under 500 words, time-bounded.
-   - Dispatch `opencode:opencode-review` via the `Agent` tool with the same questions as a focused review prompt. (Before plan 000 ships, fall back to `opencode run --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool.)
+   - Dispatch `opencode:opencode-review` via the `Agent` tool with the same questions as a focused review prompt, pinned to model `deepseek/deepseek-v4-pro`. The orchestrator includes `--model deepseek/deepseek-v4-pro` in the bash command the subagent runs (see the subagent doc for the heredoc + `--model` example). (Before plan 000 ships, fall back to `opencode run --model deepseek/deepseek-v4-pro --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool.)
 3. **Capture both verdicts** in the plan file:
    - `## Codex review summary` — date, blockers, confirmations, resolution for each blocker.
    - `## Opencode review summary` — date, blockers, confirmations, resolution for each blocker.
@@ -117,8 +117,9 @@ Follow `docs/code-review.md` for the review process. Key points:
 - Reviews go in the plan file's `## Code Review` section.
 - Reviewers: append findings with `[OPEN]` status and file:line references.
 - Authors: respond inline with `→ Response:` and `[FIXED]`/`[WONTFIX]`.
-- **Run BOTH `/codex:review` AND an opencode review pass** before creating a PR. Tag findings `[codex]` or `[opencode]` so the source is clear. All `[OPEN]` items from either reviewer must be resolved before opening the PR.
-- Opencode invocation: dispatch `opencode:opencode-review` via the `Agent` tool with prompt: "Code review the changes on this branch (run `git diff main...HEAD`). Focus on correctness, security, consistency with the reference codex plugin layout, and the rules in CLAUDE.md. Flag issues with file:line references and an [OPEN] tag." Before plan 000 ships, fall back to: `opencode run --dangerously-skip-permissions "<same prompt>"` from the repo root via the Bash tool.
+- **Run THREE independent code reviews** before creating a PR: `/codex:review` (Codex on gpt-5.5), opencode pinned to `deepseek/deepseek-v4-flash`, and opencode pinned to `volcengine-plan/glm-5.1`. Tag findings `[codex]`, `[opencode:deepseek-v4-flash]`, `[opencode:glm-5.1]` so the source is clear. All `[OPEN]` items from ANY of the three reviewers must be resolved before opening the PR.
+- Opencode invocations: dispatch `opencode:opencode-review` via the `Agent` tool TWICE in parallel (once per opencode model), each with prompt: "Code review the changes on this branch (run `git diff main...HEAD`). Focus on correctness, security, consistency with the reference codex plugin layout, and the rules in CLAUDE.md. Flag issues with file:line references and an [OPEN] tag." The orchestrator passes `--model deepseek/deepseek-v4-flash` for the first dispatch and `--model volcengine-plan/glm-5.1` for the second.
+- Before plan 000 ships, fall back to two parallel `opencode run --model <model> --dangerously-skip-permissions "<same prompt>"` invocations (one per model) from the repo root via the Bash tool.
 
 ## Coding Agent
 
@@ -147,7 +148,13 @@ opencode is being rolled out in this workspace as a third independent code-revie
 - **Phase 2 (plan 001):** write-capable rescue + background tasks — `/opencode:rescue`, `--background` execution, `/opencode:status` / `/opencode:result` / `/opencode:cancel`, `opencode:opencode-rescue` subagent.
 - **Phase 3 (plan 002):** adversarial-review + optional Stop-hook review gate.
 
-opencode runs whichever LLM the user has configured in `~/.config/opencode/opencode.json`. The plugin is model-agnostic — it never embeds a default model. Currently this user runs `volcengine-plan/glm-4.7`.
+opencode runs whichever LLM the user has configured in `~/.config/opencode/opencode.json`. The plugin is model-agnostic — it never embeds a default model. The user's `~/.config/opencode/opencode.json` must define the models referenced in this workspace's review pipeline:
+
+- `deepseek/deepseek-v4-pro` — used by the dual plan-review gate (single opencode reviewer alongside Codex).
+- `deepseek/deepseek-v4-flash` — used by the code-review pipeline (one of two opencode reviewers alongside Codex).
+- `volcengine-plan/glm-5.1` — used by the code-review pipeline (the second opencode reviewer).
+
+The pinned models give Plan reviews and Code reviews each a deliberate, reproducible model mix; pinning keeps the dual/triple-review consensus stable across reviews instead of drifting whenever the user's default model changes.
 
 Until plan 000 ships, opencode is invoked via the CLI: `opencode run --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool. After plan 000 ships, prefer `/opencode:review` for interactive use and `Agent({subagent_type: "opencode:opencode-review"})` for programmatic dispatch (e.g., the dual plan-review gate).
 

@@ -76,12 +76,12 @@ Before claiming work is done, run the verification commands and confirm the actu
 
 ## Step 5 — Review
 
-Code review catches what self-review misses. Run BOTH `/codex:review` and an opencode review pass (after plan 000 ships: dispatch `opencode:opencode-review` via the `Agent` tool; before plan 000 ships: `opencode run --dangerously-skip-permissions "..."`).
+Code review catches what self-review misses. Run THREE independent reviewers: `/codex:review` (Codex on gpt-5.5), opencode pinned to `deepseek/deepseek-v4-flash`, and opencode pinned to `volcengine-plan/glm-5.1`. After plan 000 ships, dispatch the two opencode reviewers via the `opencode:opencode-review` subagent in parallel, each with a different `--model`. Before plan 000 ships, fall back to two parallel `opencode run --model <model> --dangerously-skip-permissions "..."` invocations. (Plan reviews use a different mix: Codex + opencode pinned to `deepseek/deepseek-v4-pro`. See CLAUDE.md → "Plan review gate".)
 
-1. Request both code reviews. Each reviewer appends findings to the plan file's `## Code Review` section, following `docs/code-review.md` format. Findings are tagged `[codex]` or `[opencode]` so the source is clear.
+1. Request all three code reviews (Codex + two opencode passes with different models). Each reviewer appends findings to the plan file's `## Code Review` section, following `docs/code-review.md` format. Findings are tagged `[codex]`, `[opencode:deepseek-v4-flash]`, or `[opencode:glm-5.1]` so the source is clear.
 2. Each finding is numbered with `[OPEN]` status, file:line references, and Must Fix / Should Fix / Nice to Have priority.
 3. Author addresses each finding: fix the code or explain why not. Respond inline with `→ Response:` and update status to `[FIXED]` or `[WONTFIX]`.
-4. All `[OPEN]` items from EITHER reviewer must be resolved before shipping.
+4. All `[OPEN]` items from ANY of the three reviewers must be resolved before shipping.
 
 When acting on review feedback, evaluate each finding rigorously before implementing — don't blindly apply suggestions. If a finding is unclear or technically questionable, push back with reasoning rather than agreeing performatively.
 
