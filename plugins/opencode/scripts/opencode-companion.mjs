@@ -9,6 +9,8 @@ import { extractTrailer } from "./lib/trailer.mjs";
 import { splitArgs } from "./lib/args.mjs";
 import { listModels } from "./lib/list-models.mjs";
 
+const VALID_SCOPES = new Set(["auto", "working-tree", "branch"]);
+
 function parseReviewArgs(rawArgs) {
   // Flatten: each rawArg may itself be a quoted multi-token string from the
   // slash-command's bash interpolation. splitArgs is idempotent on already-split
@@ -20,10 +22,22 @@ function parseReviewArgs(rawArgs) {
   const out = { scope: "auto", base: "main", model: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--scope") out.scope = argv[++i];
-    else if (a === "--base") out.base = argv[++i];
-    else if (a === "--model") out.model = argv[++i];
-    else if (a.startsWith("--")) {
+    if (a === "--scope") {
+      const v = argv[++i];
+      if (v === undefined) return { ok: false, error: "--scope requires a value (auto|working-tree|branch)" };
+      if (!VALID_SCOPES.has(v)) {
+        return { ok: false, error: `--scope value must be one of auto, working-tree, branch — got: ${JSON.stringify(v)}` };
+      }
+      out.scope = v;
+    } else if (a === "--base") {
+      const v = argv[++i];
+      if (v === undefined) return { ok: false, error: "--base requires a value (a git ref)" };
+      out.base = v;
+    } else if (a === "--model") {
+      const v = argv[++i];
+      if (v === undefined) return { ok: false, error: "--model requires a value (provider/model)" };
+      out.model = v;
+    } else if (a.startsWith("--")) {
       return { ok: false, error: `unknown flag: ${a}. Supported: --scope, --base, --model.` };
     } else if (a.length > 0) {
       return { ok: false, error: `unexpected positional argument: ${a}. The review subcommand only accepts flag-style arguments.` };
@@ -34,11 +48,17 @@ function parseReviewArgs(rawArgs) {
 
 function allowedPromptDir() {
   const tmp = process.env.TMPDIR || "/tmp";
+  const resolver = realpathSync.native ?? realpathSync;
   try {
-    const resolver = realpathSync.native ?? realpathSync;
     return resolver(tmp) + "/opencode-prompts";
   } catch {
-    return "/tmp/opencode-prompts";
+    // $TMPDIR is unresolvable. Try /tmp directly (also realpath'd in case it's
+    // a symlink, e.g., /tmp -> /private/tmp on macOS).
+    try {
+      return resolver("/tmp") + "/opencode-prompts";
+    } catch {
+      return "/tmp/opencode-prompts";
+    }
   }
 }
 

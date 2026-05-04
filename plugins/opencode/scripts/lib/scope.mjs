@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { runGit, gitRepoRoot } from "./git.mjs";
 
@@ -78,8 +78,15 @@ function readUntrackedAsDiff(cwd, paths) {
     const fullPath = join(cwd, path);
     let stat;
     try {
-      stat = statSync(fullPath);
+      // Use lstatSync (not statSync) so symlinks don't cause us to read their
+      // targets — an untracked symlink like `leak -> ~/.ssh/config` would
+      // otherwise inline that external file into the prompt sent to opencode.
+      stat = lstatSync(fullPath);
     } catch {
+      continue;
+    }
+    if (stat.isSymbolicLink()) {
+      out += `\n# untracked: ${path} skipped (symlink)\n`;
       continue;
     }
     if (!stat.isFile()) continue;

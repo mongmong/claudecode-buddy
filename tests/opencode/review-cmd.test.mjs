@@ -164,6 +164,67 @@ test("review accepts the mixed form: injected --model followed by a quoted multi
   }
 });
 
+test("review rejects --scope with no value (trailing flag) with exit 2", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    setupRepo(dir);
+    const result = await runCompanion(
+      ["review", "--scope"],
+      { OPENCODE_BIN: SUCCESS_BIN, OPENCODE_REPO_ROOT: dir },
+    );
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--scope requires a value/i);
+  } finally {
+    cleanup();
+  }
+});
+
+test("review rejects --base with no value with exit 2", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    setupRepo(dir);
+    const result = await runCompanion(
+      ["review", "--scope", "auto", "--base"],
+      { OPENCODE_BIN: SUCCESS_BIN, OPENCODE_REPO_ROOT: dir },
+    );
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--base requires a value/i);
+  } finally {
+    cleanup();
+  }
+});
+
+test("review rejects --model with no value with exit 2", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    setupRepo(dir);
+    const result = await runCompanion(
+      ["review", "--model"],
+      { OPENCODE_BIN: SUCCESS_BIN, OPENCODE_REPO_ROOT: dir },
+    );
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--model requires a value/i);
+  } finally {
+    cleanup();
+  }
+});
+
+test("review rejects --scope value not in {auto, working-tree, branch} with exit 2", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    setupRepo(dir);
+    const result = await runCompanion(
+      ["review", "--scope", "brnach"],
+      { OPENCODE_BIN: SUCCESS_BIN, OPENCODE_REPO_ROOT: dir },
+    );
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--scope value must be one of/i);
+    assert.match(result.stderr, /brnach/);
+  } finally {
+    cleanup();
+  }
+});
+
 test("review honors last-occurrence wins for --model when injected and user-supplied both present", async () => {
   const { dir, cleanup } = makeTempRepo();
   try {

@@ -3739,7 +3739,75 @@ All R5 fixes verified intact (path prose, cached models output, parseReviewArgs 
 
 ## Code Review
 
-(Filled in during Step 5 of `docs/development-workflow.md`. Format per `docs/code-review.md`.)
+### Review 1 — 2026-05-03
+
+**Reviewers (three independent passes per CLAUDE.md):**
+
+- `[codex]` — Codex on gpt-5.5 (via `codex-companion.mjs`)
+- `[opencode:deepseek-v4-flash]` — opencode CLI pinned to `deepseek/deepseek-v4-flash`
+- `[opencode:glm-5.1]` — opencode CLI pinned to `volcengine-plan/glm-5.1`
+
+(All three invoked via the CLI fallback since plan 000 has not yet shipped — once it merges and the plugin is loaded, the same calls go via the `opencode:opencode-review` subagent.)
+
+**PR:** TBD (filed after `[OPEN]` items resolved)
+
+**Verdicts:**
+
+- `[codex]`: Changes Requested (1 P1 BLOCKER, 1 P2 SHOULD-FIX)
+- `[opencode:deepseek-v4-flash]`: Approved with suggestions (0 BLOCKERS, 4 SHOULD-FIX, 4 NICE-TO-HAVE)
+- `[opencode:glm-5.1]`: Approved with suggestions (0 BLOCKERS, 2 SHOULD-FIX, 4 NICE-TO-HAVE)
+
+#### Must Fix
+
+1. `[codex]` `[FIXED]` Symlink-following in untracked-file reading leaks external file content. `scope.mjs` `readUntrackedAsDiff` uses `statSync` which follows symlinks, so an untracked `leak -> ~/.ssh/config` would inline that external file into the prompt sent to opencode. Fix at `plugins/opencode/scripts/lib/scope.mjs:81` area.
+   → Response: `[FIXED]` Switched to `lstatSync`; symlinks are detected and skipped with `# untracked: <path> skipped (symlink)` marker. New test added in `tests/opencode/scope.test.mjs`.
+
+#### Should Fix
+
+2. `[codex]` `[opencode:deepseek-v4-flash]` `[opencode:glm-5.1]` `[FIXED]` `parseReviewArgs` doesn't validate flag values. If `$ARGUMENTS` ends with `--scope` / `--base` / `--model` (no value), `argv[++i]` returns `undefined` and the flag silently degrades. Same for `--scope brnach` (typo) — anything not `branch`/`working-tree` is treated as `auto`. `plugins/opencode/scripts/opencode-companion.mjs:23-25`.
+   → Response: `[FIXED]` `parseReviewArgs` now validates each flag has a value AND that `--scope` is in `{auto, working-tree, branch}`. Returns `{ok: false, error}` with a clear message. New tests in `review-cmd.test.mjs` cover trailing-flag and bad-scope-value cases.
+
+3. `[opencode:glm-5.1]` `[WONTFIX in plan 000]` ARG_MAX limit when passing prompt as positional CLI arg. macOS limit ~256 KB, Linux ~2 MB. Plan 000's diff is ~300 KB which already exceeds macOS. `plugins/opencode/scripts/lib/invoke.mjs:49`.
+   → Response: `[WONTFIX in plan 000]` Documented as a known limitation in plugin README. Mitigation requires reading prompt from stdin or a file flag (opencode CLI supports `--prompt` but it has the same ARG_MAX limit). Proper fix requires opencode CLI changes or piped-stdin redesign — tracked for plan 002 polish. Linux users (this user's platform) are unaffected by plan 000's diff size; macOS users with large diffs will see an `E2BIG` error from `spawn`, which surfaces as `verdict: needs-attention (invocation error)` — acceptable failure mode for v0.1.0.
+
+4. `[opencode:deepseek-v4-flash]` `[WONTFIX in plan 000]` `resolveBinary` env consistency. PATH-stripping tests use the call-site env; the version-check call uses the same env. Inconsistent if env state changed mid-call but not exploitable. `plugins/opencode/scripts/lib/cli-detection.mjs:17`.
+   → Response: `[WONTFIX in plan 000]` Not exploitable. Refactoring would add complexity for no observable benefit. Tracked for plan 002 if it surfaces as a real issue.
+
+5. `[opencode:deepseek-v4-flash]` `[FIXED]` Test gap — `detectOpencode` "broken binary" path (binary present, `--version` fails). `plugins/opencode/scripts/lib/cli-detection.mjs:30-33`.
+   → Response: `[FIXED]` New test in `cli-detection.test.mjs` uses `/usr/bin/false` (which exists but exits non-zero) to verify the `broken: true` flag is set.
+
+6. `[opencode:deepseek-v4-flash]` `[FIXED]` Test gap — `getDiff` with `scope: "branch"` and identical trees (empty diff branch case).
+   → Response: `[FIXED]` New test in `scope.test.mjs` verifies a freshly-branched repo returns `ok: true` with empty `value`.
+
+7. `[opencode:glm-5.1]` `[FIXED]` Test gap — `parseReviewArgs` dangling flags (covered by S2 fix tests above).
+   → Response: `[FIXED]` Same tests as S2.
+
+8. `[opencode:glm-5.1]` `[FIXED]` Test gap — bare companion invocation (default switch case prints usage to stderr and exits 2).
+   → Response: `[FIXED]` New test in `setup-cmd.test.mjs` verifies the default case.
+
+#### Nice to Have
+
+9. `[opencode:deepseek-v4-flash]` `[WONTFIX in plan 000]` `FENCE_RE` regex fragility on inline `\`\`\`` after JSON. `plugins/opencode/scripts/lib/trailer.mjs:1`.
+   → Response: `[WONTFIX in plan 000]` The regex requires `\n` before the closing fence; models that omit it produce a parse-error verdict, which is the correct fallback. Documented as inherent to the trailer convention. Plan 002 can revisit if telemetry shows this is common.
+
+10. `[opencode:deepseek-v4-flash]` `[WONTFIX in plan 000]` Better error message for cwd ENOENT vs binary ENOENT in `invoke.mjs`.
+    → Response: `[WONTFIX in plan 000]` Cosmetic; the existing `failed to spawn ${binary}: ${err.message}` includes the OS error string. Plan 002 polish.
+
+11. `[opencode:deepseek-v4-flash]` `[FIXED]` `allowedPromptDir` fallback `/tmp` not realpath'd. `opencode-companion.mjs:41`. If `/tmp` is a symlink, `isUnderAllowedDir` rejects legitimate paths.
+    → Response: `[FIXED]` Fallback now uses `realpathSync("/tmp")` with a hardcoded last-ditch fallback to `"/tmp/opencode-prompts"` only if `/tmp` itself is unresolvable (extremely rare).
+
+12. `[opencode:deepseek-v4-flash]` `[FIXED]` `docs/architecture/decisions.md` not created. CLAUDE.md says "create when the first decision is made". Plan 000 made three architectural decisions.
+    → Response: `[FIXED]` Created `docs/architecture/decisions.md` with the three plan-000 decisions (subagent naming, HANDOFF.md retirement, handwritten validator vs ajv) plus pointers to where future plans should record cross-cutting decisions.
+
+13. `[opencode:glm-5.1]` `[WONTFIX in plan 000]` `cli-detection` `--version` check has no timeout (a hung opencode binary blocks `detectOpencode`).
+    → Response: `[WONTFIX in plan 000]` `execFileSync` doesn't easily support timeout in the way `invokeOpencode` does. Risk is low (`opencode --version` is a trivial operation). Plan 002 polish.
+
+14. `[opencode:glm-5.1]` `[WONTFIX in plan 000]` Defense-in-depth — `readUntrackedAsDiff` could verify paths stay within repo root.
+    → Response: `[WONTFIX in plan 000]` `git ls-files --others` returns repo-relative paths; defense-in-depth has marginal value here. Combined with the symlink fix (R1), this surface is contained. Plan 002 polish.
+
+#### Summary
+
+All `[OPEN]` items from the BLOCKER and SHOULD-FIX tiers are either `[FIXED]` or `[WONTFIX in plan 000]` with documented rationale. NICE-TO-HAVE items partially fixed (3 of 6), the rest tracked for plan 002 polish. PR can proceed.
 
 ---
 

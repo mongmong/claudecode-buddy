@@ -38,3 +38,17 @@ test("setup reports missing config when binary is present but config is not", as
   assert.match(result.stdout, /opencode is installed/i);
   assert.match(result.stdout, /config not found/i);
 });
+
+test("companion with no subcommand prints usage to stderr and exits 2", async () => {
+  const result = await runCompanion([], {});
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /Unknown subcommand/i);
+  assert.match(result.stderr, /Usage: opencode-companion/i);
+});
+
+test("companion with unknown subcommand prints usage to stderr and exits 2", async () => {
+  const result = await runCompanion(["bogus"], {});
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /Unknown subcommand: bogus/);
+  assert.match(result.stderr, /Usage: opencode-companion/i);
+});

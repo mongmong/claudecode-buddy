@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { makeTempRepo } from "./helpers.mjs";
 import { resolveScope, getDiff } from "../../plugins/opencode/scripts/lib/scope.mjs";
@@ -160,6 +160,32 @@ test("getDiff returns branch diff when scope is branch", () => {
   }
 });
 
+test("getDiff skips untracked symlinks WITHOUT following them (CVE-style file disclosure defense)", () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    initRepo(dir);
+    // Write a sensitive-content file outside the repo, then symlink to it from inside.
+    // If readUntrackedAsDiff used statSync, it would follow the link and inline the
+    // sensitive content. With lstatSync, the symlink is detected and skipped.
+    const { dir: outsideDir, cleanup: outsideCleanup } = makeTempRepo();
+    try {
+      writeFileSync(join(outsideDir, "sensitive.txt"), "VERY-SECRET-CONTENT\n");
+      symlinkSync(join(outsideDir, "sensitive.txt"), join(dir, "leak"));
+      const result = getDiff({ cwd: dir, scope: "working-tree" });
+      assert.equal(result.ok, true);
+      // The symlink path itself is mentioned (acknowledged in the diff body).
+      assert.match(result.value, /leak.*skipped.*symlink/i);
+      // The TARGET content must NOT appear.
+      assert.doesNotMatch(result.value, /VERY-SECRET-CONTENT/,
+        `symlink target was followed and content leaked into the diff!`);
+    } finally {
+      outsideCleanup();
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("getDiff handles paths with spaces and shell metacharacters safely", () => {
   const { dir, cleanup } = makeTempRepo();
   try {
@@ -170,6 +196,20 @@ test("getDiff handles paths with spaces and shell metacharacters safely", () => 
     assert.equal(result.ok, true);
     assert.match(result.value, /weird/);
     assert.match(result.value, /safe/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("getDiff with branch scope on identical trees returns ok with empty value", () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    initRepo(dir);
+    git(dir, "checkout", "-q", "-b", "feature");
+    // No new commits or changes — feature is identical to main.
+    const result = getDiff({ cwd: dir, scope: "branch", base: "main" });
+    assert.equal(result.ok, true);
+    assert.equal(result.value.trim(), "");
   } finally {
     cleanup();
   }
