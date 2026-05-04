@@ -20,8 +20,10 @@ export function writeFixture(dir, relPath, contents) {
 
 export function runCompanion(args, env = {}) {
   return new Promise((resolve, reject) => {
+    // Use process.execPath so tests that override PATH (to simulate a missing
+    // opencode binary) don't accidentally break the spawn of node itself.
     const child = spawn(
-      "node",
+      process.execPath,
       ["plugins/opencode/scripts/opencode-companion.mjs", ...args],
       { env: { ...process.env, ...env } },
     );
