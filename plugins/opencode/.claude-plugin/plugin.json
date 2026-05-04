@@ -1,6 +1,6 @@
 {
   "name": "opencode",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Use opencode from Claude Code to review code with whichever LLM you have configured.",
   "author": {
     "name": "claudecode-buddy"

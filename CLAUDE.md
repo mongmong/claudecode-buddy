@@ -200,7 +200,7 @@ Follow `docs/code-review.md` for the review process. Key points:
 
 **Claude Opus is the primary coding agent.** All implementation, debugging, refactoring, and coding tasks should be done by Claude (Opus model) — either directly or via subagents. Use the `superpowers:subagent-driven-development` skill for multi-task plan execution.
 
-Codex and opencode are *secondary* agents. Codex remains review-only in this workspace. opencode is review-only in plan 000 and becomes write-capable for selective rescue tasks in plan 001 — even after plan 001, Claude (Opus) remains the primary coding agent and opencode is a *secondary* agent for delegated rescue work, not the default.
+Codex and opencode are *secondary* agents. Codex remains review-only in this workspace. opencode became write-capable in plan 001 via `/opencode:run` — Claude (Opus) remains the primary coding agent and opencode is a *secondary* agent for delegated coding work where the user wants a different model's perspective on writing the code. Use `/opencode:run --yolo` (with explicit user consent) for auto-approve, or `/opencode:run` (no `--yolo`) to keep opencode's permission prompts in the loop in interactive contexts.
 
 ## Codex (GPT-5.5) — Review Only
 
@@ -219,8 +219,8 @@ Do NOT use Codex for implementation, debugging, refactoring, or any coding work.
 
 opencode is being rolled out in this workspace as a third independent code-review and (eventually) coding agent, alongside Claude and Codex. The plugin lives at `plugins/opencode/` and is built up over phased plans:
 
-- **Phase 1 (plan 000, this plan):** read-only review only — `/opencode:review`, `/opencode:setup`, `opencode:opencode-review` subagent. Foreground execution. Used by the dual plan-review gate and code-review process.
-- **Phase 2 (plan 001):** write-capable rescue + background tasks — `/opencode:rescue`, `--background` execution, `/opencode:status` / `/opencode:result` / `/opencode:cancel`, `opencode:opencode-rescue` subagent.
+- **Phase 1 (plan 000, shipped):** read-only review — `/opencode:review`, `/opencode:setup`, `opencode:opencode-review` subagent. Foreground execution. Used by the dual plan-review gate and code-review process.
+- **Phase 2 (plan 001, this plan):** write-capable run + background tasks — `/opencode:run`, `--background` execution, `/opencode:status` / `/opencode:result` / `/opencode:cancel`, `opencode:opencode-run` subagent. Local install via `scripts/install-local.sh`.
 - **Phase 3 (plan 002):** adversarial-review + optional Stop-hook review gate.
 
 opencode runs whichever LLM the user has configured in `~/.config/opencode/opencode.json`. The plugin is model-agnostic — it never embeds a default model. The user's `~/.config/opencode/opencode.json` must define the models referenced in this workspace's review pipeline:

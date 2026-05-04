@@ -3525,4 +3525,57 @@ Independently of plan 001's execution, the following follow-up plans are queued 
 
 ## Post-execution report
 
-(Filled in at the end of execution per Phase 9, Task 9.3.)
+**Date:** 2026-05-04
+**Branch:** `feature/plan-001-opencode-run-and-background`
+**Author:** Claude (Opus 4.7, 1M context)
+
+### What was implemented
+
+All 9 phases ship as planned, plus the round-1-through-round-6 reviewer findings folded into the design before implementation began:
+
+| Phase | Component | Key commits |
+|---|---|---|
+| 1 | Rename `opencode-companion.mjs` → `buddy.mjs` | `1d121d8` |
+| 2 | `lib/jobs.mjs` + `.gitignore` | `25744aa` |
+| 3 | `/opencode:run` foreground + supervisor-backed background | `b56de01`, `1680693`, `98731c7` |
+| 4 | `/opencode:status` / `/opencode:result` / `/opencode:cancel` | `94ef6fc` |
+| 5 | Slash commands (run / status / result / cancel) | `f89f2f5` |
+| 6 | Skill update + `opencode:opencode-run` subagent | `bafc788` |
+| 7 | Hooks (SessionStart + SessionEnd) | `7238be0` |
+| 8 | `scripts/install-local.sh` + `scripts/uninstall-local.sh` | `00c20d4` |
+| 9 | CLAUDE.md / README / CHANGELOG / version bump / post-execution report | this commit |
+
+### Test counts
+
+- **142 tests total**, 139 pass + 3 e2e skipped (gated behind `OPENCODE_E2E=1`).
+- Coverage delta from plan 000: 87 → 142 tests (+55 new in plan 001).
+- New test files: `jobs.test.mjs` (21), `run-cmd.test.mjs` (13), `status-cmd.test.mjs` (4), `result-cmd.test.mjs` (5), `cancel-cmd.test.mjs` (4), `hooks.test.mjs` (8).
+
+### Deviations from the plan
+
+- **Bug fix during execution (`pidIsOurSupervisor`):** the plan checked for `supervisor.mjs` substring in `/proc/<pid>/cmdline`, but on Linux `process.title` overwrites argv via `uv_set_process_title` so cmdline shows the title (`buddy-supervisor:<jobId>`) NOT the original argv. Fixed in code (and in escalator helper) to match `buddy-supervisor` + `jobId` substrings. Plan reviewers (Codex R3-9) had noted the `process.title` mechanism was misdescribed but the substring choice in the plan was wrong; this surfaced when the cancel test failed and was fixed in commit `94ef6fc`.
+- **Mock fixtures had to handle `--version`:** the run-* fixtures originally only handled the `run` subcommand. cli-detection invokes the binary first with `--version` to verify it's installed; without an early `--version` handler, the fixture would execute its main body (writing `fixed.js` to the workspace cwd, or returning a non-zero exit that broke detection). Fixed in commit `98731c7`.
+- **`parseRunArgs` flatMap-splitArgs broke `--task` values with whitespace:** the plan adopted the same flatMap pattern as `parseReviewArgs`, but review's flag values never contain whitespace while run's `--task` values are free-form prose. The `--task "say done"` value was being split into `["say", "done"]`. Fixed by reverting to length-based splitting (`rawArgs.length === 1 ? splitArgs(rawArgs[0]) : rawArgs`) for the run subcommand only.
+- A stray `fixed.js` file was committed twice during Phase 3 / Phase 4 from the manual repros that ran fixtures with no `--version` handler. Both removed in cleanup commits.
+
+### Known limitations (also documented in the plugin README)
+
+- macOS cancel uses best-effort PID match (no `/proc`); a recycled PID could be hit. Tracked for plan 002.
+- CAS via `expectedStatus` is best-effort, not truly atomic. Tracked for plan 002.
+- `--task-file` TOCTOU defense is Linux-only (uses `/proc/self/fd/`). Tracked for plan 002.
+- ARG_MAX limit for `--task` as positional CLI arg. Tracked for plan 002.
+
+### Follow-up plans queued
+
+- **Review session continuity** (Option Z, sized small) — per-plan + per-role + per-model session keys with rule-based key derivation, `--session-key` escape hatch, and branch-name fallback for unnumbered work. Design notes captured in the "Follow-up plans queued" section above.
+- **Plan 002** — `/opencode:adversarial-review` + optional Stop-hook review gate; macOS support for `pidIsOurSupervisor` and `--task-file` TOCTOU defense; `flock`-based serialization; `--task` stdin-as-prompt to bypass ARG_MAX.
+
+### User action required
+
+Plan 001 introduces `/opencode:run` and the supervisor for background tasks. To exercise from inside Claude Code:
+
+1. Run `bash scripts/install-local.sh` (already done during Phase 8 verification).
+2. Restart Claude Code so the marketplace and plugin reload.
+3. The new slash commands (`/opencode:run`, `/opencode:status`, `/opencode:result`, `/opencode:cancel`) and the `opencode:opencode-run` subagent should appear.
+
+The previously-pinned models for the dual-review pipeline (`deepseek/deepseek-v4-pro`, `deepseek/deepseek-v4-flash`, `volcengine-plan/glm-5.1`) must still be present in `~/.config/opencode/opencode.json`. The user confirmed `volcengine-plan/glm-5.1` is available; the deepseek models were exercised throughout plan 001's review rounds.
