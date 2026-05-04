@@ -76,7 +76,7 @@ Before claiming work is done, run the verification commands and confirm the actu
 
 ## Step 5 — Review
 
-Code review catches what self-review misses. Run BOTH `/codex:review` and an opencode review pass (CLI: `opencode run --dangerously-skip-permissions "..."` until this workspace ships its own slash command).
+Code review catches what self-review misses. Run BOTH `/codex:review` and an opencode review pass (after plan 000 ships: dispatch `opencode:opencode-review` via the `Agent` tool; before plan 000 ships: `opencode run --dangerously-skip-permissions "..."`).
 
 1. Request both code reviews. Each reviewer appends findings to the plan file's `## Code Review` section, following `docs/code-review.md` format. Findings are tagged `[codex]` or `[opencode]` so the source is clear.
 2. Each finding is numbered with `[OPEN]` status, file:line references, and Must Fix / Should Fix / Nice to Have priority.

@@ -4,7 +4,7 @@ Code review happens after the implementation is complete (Step 5 in `docs/develo
 
 The plan file's `## Code Review` section is the communication channel between reviewers and authors. Both parties use the same document — reviewers add findings, authors respond inline.
 
-This workspace runs **two independent reviewers** on every code review pass: Codex (`/codex:review`) and opencode (`opencode run --dangerously-skip-permissions "..."` until the local opencode plugin ships its own slash command). Each finding is tagged `[codex]` or `[opencode]` so its source is clear.
+This workspace runs **two independent reviewers** on every code review pass: Codex (`/codex:review`) and opencode (the `opencode:opencode-review` subagent dispatched via the `Agent` tool — falls back to `opencode run --dangerously-skip-permissions "..."` before plan 000 ships). Each finding is tagged `[codex]` or `[opencode]` so its source is clear.
 
 ## For reviewers
 

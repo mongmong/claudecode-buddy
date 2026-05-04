@@ -5,7 +5,7 @@ This workspace builds Claude Code plugins. The first plugin is `opencode` — a 
 ## CRITICAL RULES (never skip)
 
 - **Always create a feature branch** before implementation. Never commit directly to main. Use `git checkout -b feature/plan-NNN-description`.
-- **Always dispatch Codex AND opencode plan review before any implementation.** After saving a plan to `docs/plans/`, dispatch `codex:codex-rescue` AND run an opencode review (CLI today: `opencode run --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool — switch to `/opencode:review` or the `opencode:opencode-rescue` subagent once this workspace ships them). **Do NOT begin implementation until Claude, Codex, AND opencode agree** on the plan. If either reviewer flags blockers, revise the plan and re-dispatch BOTH reviews on the revised plan (so both verdicts apply to the final version). Iterate until all three concur. Capture both verdicts in the plan's `## Codex review summary` and `## Opencode review summary` sections.
+- **Always dispatch Codex AND opencode plan review before any implementation.** After saving a plan to `docs/plans/`, dispatch `codex:codex-rescue` AND run an opencode review (after plan 000 ships: dispatch the `opencode:opencode-review` subagent via the `Agent` tool with a focused review prompt; before plan 000 ships: `opencode run --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool). **Do NOT begin implementation until Claude, Codex, AND opencode agree** on the plan. If either reviewer flags blockers, revise the plan and re-dispatch BOTH reviews on the revised plan (so both verdicts apply to the final version). Iterate until all three concur. Capture both verdicts in the plan's `## Codex review summary` and `## Opencode review summary` sections.
 - **Always code review** before creating a PR. Run BOTH `/codex:review` and an opencode review pass; write findings (tagged `[codex]` and `[opencode]`) to the plan file's `## Code Review` section.
 - **Always write a post-execution report** in the plan file before shipping.
 - **Always run the full test suite** before pushing. Do not push with failing tests.
@@ -92,7 +92,7 @@ Every plan — new or revised — must pass BOTH a Codex review AND an opencode 
 1. **Save the plan to `docs/plans/`** (uncommitted is fine — reviewers read from disk).
 2. **Dispatch reviews in parallel:**
    - `codex:codex-rescue` with the plan path and explicit review questions (blockers, hidden assumptions, scope, ordering, missing risks). Keep the prompt focused — under 500 words, time-bounded.
-   - `opencode run --dangerously-skip-permissions "<focused review prompt with the same questions>"` from the repo root via the Bash tool. (Once this workspace ships its own opencode plugin, switch to `/opencode:rescue` or the `opencode:opencode-rescue` subagent.)
+   - Dispatch `opencode:opencode-review` via the `Agent` tool with the same questions as a focused review prompt. (Before plan 000 ships, fall back to `opencode run --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool.)
 3. **Capture both verdicts** in the plan file:
    - `## Codex review summary` — date, blockers, confirmations, resolution for each blocker.
    - `## Opencode review summary` — date, blockers, confirmations, resolution for each blocker.
@@ -118,13 +118,13 @@ Follow `docs/code-review.md` for the review process. Key points:
 - Reviewers: append findings with `[OPEN]` status and file:line references.
 - Authors: respond inline with `→ Response:` and `[FIXED]`/`[WONTFIX]`.
 - **Run BOTH `/codex:review` AND an opencode review pass** before creating a PR. Tag findings `[codex]` or `[opencode]` so the source is clear. All `[OPEN]` items from either reviewer must be resolved before opening the PR.
-- Opencode invocation (until the plugin ships): `opencode run --dangerously-skip-permissions "Code review the changes on this branch (run \`git diff main...HEAD\`). Focus on correctness, security, consistency with the reference codex plugin layout, and the rules in CLAUDE.md. Flag issues with file:line references and an [OPEN] tag."` — run from the repo root via the Bash tool.
+- Opencode invocation: dispatch `opencode:opencode-review` via the `Agent` tool with prompt: "Code review the changes on this branch (run `git diff main...HEAD`). Focus on correctness, security, consistency with the reference codex plugin layout, and the rules in CLAUDE.md. Flag issues with file:line references and an [OPEN] tag." Before plan 000 ships, fall back to: `opencode run --dangerously-skip-permissions "<same prompt>"` from the repo root via the Bash tool.
 
 ## Coding Agent
 
 **Claude Opus is the primary coding agent.** All implementation, debugging, refactoring, and coding tasks should be done by Claude (Opus model) — either directly or via subagents. Use the `superpowers:subagent-driven-development` skill for multi-task plan execution.
 
-Do NOT delegate coding tasks to Codex or opencode. Both are review-only.
+Codex and opencode are *secondary* agents. Codex remains review-only in this workspace. opencode is review-only in plan 000 and becomes write-capable for selective rescue tasks in plan 001 — even after plan 001, Claude (Opus) remains the primary coding agent and opencode is a *secondary* agent for delegated rescue work, not the default.
 
 ## Codex (GPT-5.5) — Review Only
 
@@ -139,20 +139,26 @@ Codex provides an independent second-model perspective (GPT-5.5) that catches is
 
 Do NOT use Codex for implementation, debugging, refactoring, or any coding work. Those belong to Claude Opus.
 
-## Opencode — Review Only
+## Opencode
 
-**Use opencode exclusively for review tasks**, alongside Codex, to provide a third independent model perspective. Opencode runs through whichever LLM the user has configured in `~/.opencode/`, giving a different vantage point from Codex. Opencode should NOT be used for coding.
+opencode is being rolled out in this workspace as a third independent code-review and (eventually) coding agent, alongside Claude and Codex. The plugin lives at `plugins/opencode/` and is built up over phased plans:
 
-This workspace is BUILDING the opencode plugin, so until it ships, opencode is invoked via the CLI: `opencode run --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool. Once `/opencode:review` and `opencode:opencode-rescue` exist in this workspace, switch to those for cleaner ergonomics.
+- **Phase 1 (plan 000, this plan):** read-only review only — `/opencode:review`, `/opencode:setup`, `opencode:opencode-review` subagent. Foreground execution. Used by the dual plan-review gate and code-review process.
+- **Phase 2 (plan 001):** write-capable rescue + background tasks — `/opencode:rescue`, `--background` execution, `/opencode:status` / `/opencode:result` / `/opencode:cancel`, `opencode:opencode-rescue` subagent.
+- **Phase 3 (plan 002):** adversarial-review + optional Stop-hook review gate.
+
+opencode runs whichever LLM the user has configured in `~/.config/opencode/opencode.json`. The plugin is model-agnostic — it never embeds a default model. Currently this user runs `volcengine-plan/glm-4.7`.
+
+Until plan 000 ships, opencode is invoked via the CLI: `opencode run --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool. After plan 000 ships, prefer `/opencode:review` for interactive use and `Agent({subagent_type: "opencode:opencode-review"})` for programmatic dispatch (e.g., the dual plan-review gate).
+
+Until plan 001 ships, opencode is review-only by capability — do not delegate coding tasks to it. After plan 001 ships, opencode-rescue can take write-capable tasks; Claude (Opus) remains the *primary* coding agent and opencode is a *secondary* agent for selective rescue.
 
 - **Plan review (BLOCKING — see "Plan review gate" above)** — every plan must pass an opencode review *in addition to* the Codex review before any code is written. Capture the verdict in the plan's `## Opencode review summary` section.
-- **Code review** — run opencode alongside `/codex:review` for branch-level review before PRs. See the "Code Review" section above for the invocation pattern.
+- **Code review** — run opencode alongside `/codex:review` for branch-level review before PRs.
 - **Spec review** — run opencode to validate design specs in `docs/specs/`, alongside the Codex spec review.
 - **Implementation review** — run opencode to verify implementations match their plan specifications.
 
 The three-model consensus (Claude + Codex + opencode) is the project standard for plan review. It catches blind spots that even two models can share.
-
-Do NOT use opencode for implementation, debugging, refactoring, or any coding work. Those belong to Claude Opus.
 
 ## Multi-Agent Coordination
 
