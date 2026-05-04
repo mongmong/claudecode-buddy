@@ -1,23 +1,21 @@
 #!/usr/bin/env node
-import { readFileSync, realpathSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { openSync, closeSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { detectOpencode } from "./lib/cli-detection.mjs";
 import { detectConfig, defaultConfigPath } from "./lib/config-detection.mjs";
 import { resolveScope, getDiff } from "./lib/scope.mjs";
 import { buildReviewPrompt } from "./lib/prompt.mjs";
-import { invokeOpencode } from "./lib/invoke.mjs";
+import { invokeOpencode, invokeOpencodeRaw } from "./lib/invoke.mjs";
 import { extractTrailer } from "./lib/trailer.mjs";
 import { splitArgs } from "./lib/args.mjs";
 import { listModels } from "./lib/list-models.mjs";
+import { createJob, updateJob, listJobs, loadJob, jobsDir, jobPath, JOB_ID_RE } from "./lib/jobs.mjs";
 
 const VALID_SCOPES = new Set(["auto", "working-tree", "branch"]);
 
 function parseReviewArgs(rawArgs) {
-  // Flatten: each rawArg may itself be a quoted multi-token string from the
-  // slash-command's bash interpolation. splitArgs is idempotent on already-split
-  // single tokens, so flatMap over every rawArg handles all three call shapes:
-  //   ["--scope", "auto"]                    (multi-arg, already split)
-  //   ["--scope auto"]                       (single quoted string)
-  //   ["--model", "X", "--scope auto"]       (mixed: injected model + quoted $ARGUMENTS)
   const argv = rawArgs.flatMap((a) => splitArgs(a));
   const out = { scope: "auto", base: "main", model: null };
   for (let i = 0; i < argv.length; i++) {
@@ -52,8 +50,6 @@ function allowedPromptDir() {
   try {
     return resolver(tmp) + "/opencode-prompts";
   } catch {
-    // $TMPDIR is unresolvable. Try /tmp directly (also realpath'd in case it's
-    // a symlink, e.g., /tmp -> /private/tmp on macOS).
     try {
       return resolver("/tmp") + "/opencode-prompts";
     } catch {
@@ -71,6 +67,40 @@ function isUnderAllowedDir(filePath) {
   }
   const base = allowedPromptDir();
   return resolved === base || resolved.startsWith(base + "/");
+}
+
+function readTaskFileFdBound(path) {
+  let fd;
+  try {
+    fd = openSync(path, "r");
+  } catch (err) {
+    return { ok: false, error: `failed to open task file ${path}: ${err.message}` };
+  }
+  try {
+    let realPath;
+    try {
+      realPath = realpathSync(`/proc/self/fd/${fd}`);
+    } catch (err) {
+      return {
+        ok: false,
+        error:
+          `could not resolve fd path for ${path} (Linux /proc required): ${err.message}. ` +
+          `If on macOS, this defense is not yet implemented — plan 002 adds platform-specific support.`,
+      };
+    }
+    const base = allowedPromptDir();
+    if (realPath !== base && !realPath.startsWith(base + "/")) {
+      return {
+        ok: false,
+        error:
+          `--task-file path \`${path}\` resolves to \`${realPath}\` which is not under the allowed prompt directory ` +
+          `(${base}). The subagent must write task files via mktemp inside $TMPDIR/opencode-prompts/.`,
+      };
+    }
+    return { ok: true, value: readFileSync(fd, "utf8") };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function parsePromptArgs(rawArgs) {
@@ -127,6 +157,56 @@ function parsePromptArgs(rawArgs) {
   return { ok: true, text: positional.join(" "), model };
 }
 
+function parseRunArgs(rawArgs) {
+  // Don't flatMap-splitArgs here: --task values are free-form text that may
+  // contain whitespace, and splitting "say done" into ["say", "done"] would
+  // break parsing. Bash passes the task value as a single arg already.
+  // Single-arg quoted-bundle form is supported via splitArgs only when the
+  // entire rawArgs is one element (rare for run; common for review).
+  const argv = rawArgs.length === 1 ? splitArgs(rawArgs[0]) : rawArgs;
+  let task = null;
+  let taskFile = null;
+  let model = null;
+  let yolo = false;
+  let background = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--task") {
+      const v = argv[++i];
+      if (v === undefined) return { ok: false, error: "--task requires a value" };
+      task = v;
+    } else if (a === "--task-file") {
+      const v = argv[++i];
+      if (v === undefined) return { ok: false, error: "--task-file requires a path argument" };
+      taskFile = v;
+    } else if (a === "--model") {
+      const v = argv[++i];
+      if (v === undefined) return { ok: false, error: "--model requires a value" };
+      model = v;
+    } else if (a === "--yolo") {
+      yolo = true;
+    } else if (a === "--background") {
+      background = true;
+    } else if (a.startsWith("--")) {
+      return { ok: false, error: `unknown flag: ${a}. Supported: --task, --task-file, --model, --yolo, --background.` };
+    } else if (a.length > 0) {
+      return { ok: false, error: `unexpected positional argument: ${a}. Use --task or --task-file.` };
+    }
+  }
+  if (task === null && taskFile === null) {
+    return { ok: false, error: "run requires --task <text> or --task-file <path-under-$TMPDIR/opencode-prompts/>" };
+  }
+  if (task !== null && taskFile !== null) {
+    return { ok: false, error: "--task and --task-file are mutually exclusive" };
+  }
+  if (taskFile !== null) {
+    const safeRead = readTaskFileFdBound(taskFile);
+    if (!safeRead.ok) return { ok: false, error: safeRead.error };
+    task = safeRead.value;
+  }
+  return { ok: true, value: { task, model, yolo, background } };
+}
+
 function emitTextOnly(text) {
   process.stdout.write(text);
   if (!text.endsWith("\n")) process.stdout.write("\n");
@@ -160,6 +240,48 @@ function emitTextWithOptionalVerdict(text) {
   if (trailer.ok) {
     process.stdout.write("\n---\n");
     emitParsedVerdict(trailer.value);
+  }
+}
+
+function diffSummary(cwd) {
+  try {
+    const out = execFileSync("git", ["diff", "--stat"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let summary = "";
+    if (out.trim()) summary += out;
+    if (untracked.trim()) {
+      summary += "\nUntracked files:\n";
+      for (const line of untracked.trim().split("\n")) summary += `  ${line}\n`;
+    }
+    return summary || "(no file changes detected)";
+  } catch {
+    return "(git diff unavailable)";
+  }
+}
+
+function isAlive(pid) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function pidIsOurSupervisor(pid, jobId) {
+  if (!isAlive(pid)) return false;
+  if (process.platform !== "linux") {
+    return true;
+  }
+  try {
+    const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+    return cmdline.includes("supervisor.mjs") && cmdline.includes(jobId);
+  } catch {
+    return false;
   }
 }
 
@@ -257,8 +379,6 @@ async function runPrompt(rawArgs) {
     process.stderr.write(`${input.error}\n`);
     process.exit(2);
   }
-  // Trim only for the empty-check; pass the original verbatim text to opencode
-  // so leading/trailing whitespace in the orchestrator's prompt is preserved.
   if (input.text.trim().length === 0) {
     process.stderr.write("prompt subcommand requires non-empty prompt text\n");
     process.exit(2);
@@ -270,7 +390,6 @@ async function runPrompt(rawArgs) {
     process.exit(0);
   }
 
-  // Model precedence: --model flag > OPENCODE_MODEL env > opencode config default.
   const model = input.model ?? process.env.OPENCODE_MODEL ?? null;
 
   const invocation = await invokeOpencode({
@@ -285,6 +404,280 @@ async function runPrompt(rawArgs) {
     process.exit(0);
   }
   emitTextWithOptionalVerdict(invocation.text);
+  process.exit(0);
+}
+
+async function runRun(rawArgs) {
+  const parsed = parseRunArgs(rawArgs);
+  if (!parsed.ok) {
+    process.stderr.write(`${parsed.error}\n`);
+    process.exit(2);
+  }
+  const args = parsed.value;
+  const cwd = process.env.OPENCODE_REPO_ROOT ?? process.cwd();
+  const projectDir = process.env.CLAUDE_PROJECT_DIR ?? cwd;
+
+  const isInteractive = process.stderr.isTTY || process.env.OPENCODE_BUDDY_FORCE_INTERACTIVE === "1";
+  if (!args.yolo && !isInteractive && !args.background) {
+    process.stderr.write(
+      "run requires --yolo when invoked from a non-interactive context (subagent, CI, piped stderr). " +
+      "Without --yolo, opencode prompts for write permissions and the call would stall until timeout.\n",
+    );
+    process.exit(2);
+  }
+  if (args.background && !args.yolo) {
+    process.stderr.write(
+      "--background requires --yolo. Background runs cannot answer opencode's write permission prompts.\n",
+    );
+    process.exit(2);
+  }
+
+  const cli = detectOpencode({ env: process.env });
+  if (!cli.installed) {
+    process.stdout.write(`opencode is not installed.\n\n${cli.guidance}\n`);
+    process.exit(0);
+  }
+
+  if (args.background) {
+    return runRunBackground(args, cwd, projectDir, cli);
+  }
+
+  const opencodeArgs = ["run", "--format", "json", "--dir", cwd];
+  if (args.yolo) opencodeArgs.push("--dangerously-skip-permissions");
+  if (args.model) opencodeArgs.push("--model", args.model);
+  opencodeArgs.push(args.task);
+
+  const job = createJob(projectDir, {
+    kind: "run",
+    model: args.model,
+    pid: process.pid,
+    summary: args.task.split("\n")[0].slice(0, 80),
+  });
+
+  const invocation = await invokeOpencodeRaw({
+    binary: cli.binary,
+    args: opencodeArgs,
+    cwd,
+  });
+
+  if (!invocation.ok) {
+    updateJob(projectDir, job.id, {
+      status: "failed",
+      finished_at: new Date().toISOString(),
+      exit_code: invocation.exit_code ?? null,
+    });
+    process.stdout.write(`opencode invocation failed:\n${invocation.error}\n`);
+    process.exit(0);
+  }
+
+  updateJob(projectDir, job.id, {
+    status: "completed",
+    finished_at: new Date().toISOString(),
+    exit_code: 0,
+  });
+
+  emitTextOnly(invocation.text);
+  process.stdout.write("\n---\nFiles changed:\n");
+  process.stdout.write(diffSummary(cwd));
+  process.exit(0);
+}
+
+function runRunBackground(args, cwd, projectDir, cli) {
+  const job = createJob(projectDir, {
+    kind: "run",
+    model: args.model,
+    summary: args.task.split("\n")[0].slice(0, 80),
+  });
+
+  const opencodeArgs = [
+    "run",
+    "--print-logs", "--log-level", "INFO",
+    "--format", "json",
+    "--dangerously-skip-permissions",
+    "--dir", cwd,
+  ];
+  if (args.model) opencodeArgs.push("--model", args.model);
+  opencodeArgs.push(args.task);
+
+  const supervisorPath = join(dirname(fileURLToPath(import.meta.url)), "lib", "supervisor.mjs");
+
+  const supervisor = spawn(
+    process.execPath,
+    [supervisorPath, job.id, projectDir, cli.binary, cwd, ...opencodeArgs],
+    { detached: true, stdio: "ignore" },
+  );
+  supervisor.unref();
+
+  updateJob(projectDir, job.id, {
+    pid: supervisor.pid,
+    pgid: supervisor.pid,
+    stdout_path: join(jobsDir(projectDir), `${job.id}.stdout`),
+    stderr_path: join(jobsDir(projectDir), `${job.id}.stderr`),
+    events_path: join(jobsDir(projectDir), `${job.id}.events`),
+  });
+
+  process.stdout.write(`Started job ${job.id} in the background (pid ${supervisor.pid}).\n`);
+  process.stdout.write(`Check status:  /opencode:status ${job.id}\n`);
+  process.stdout.write(`Get result:    /opencode:result ${job.id}\n`);
+  process.stdout.write(`Cancel:        /opencode:cancel ${job.id}\n`);
+  process.exit(0);
+}
+
+function elapsedHuman(startIso, finishIso) {
+  const start = new Date(startIso).getTime();
+  const end = finishIso ? new Date(finishIso).getTime() : Date.now();
+  const seconds = Math.floor((end - start) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+function runStatus(rawArgs) {
+  const argv = rawArgs.flatMap((a) => splitArgs(a));
+  const projectDir = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+  const jobId = argv.find((a) => a.startsWith("job_"));
+
+  if (jobId) {
+    const r = loadJob(projectDir, jobId);
+    if (!r.ok) {
+      process.stdout.write(`${r.error}\n`);
+      process.exit(0);
+    }
+    process.stdout.write(JSON.stringify(r.value, null, 2) + "\n");
+    process.exit(0);
+  }
+
+  const list = listJobs(projectDir);
+  if (!list.ok) {
+    process.stdout.write(`failed to list jobs: ${list.error}\n`);
+    process.exit(0);
+  }
+  if (list.value.length === 0) {
+    process.stdout.write("no jobs found in this repo\n");
+    process.exit(0);
+  }
+
+  process.stdout.write("| id | kind | model | status | elapsed | summary |\n");
+  process.stdout.write("|---|---|---|---|---|---|\n");
+  for (const j of list.value) {
+    process.stdout.write(
+      `| ${j.id} | ${j.kind} | ${j.model ?? "(default)"} | ${j.status} | ${elapsedHuman(j.started_at, j.finished_at)} | ${(j.summary ?? "").slice(0, 60)} |\n`,
+    );
+  }
+  process.exit(0);
+}
+
+function runResult(rawArgs) {
+  const argv = rawArgs.flatMap((a) => splitArgs(a));
+  const jobId = argv.find((a) => a.startsWith("job_"));
+  if (!jobId) {
+    process.stderr.write("result requires a job id (e.g., result job_abc123)\n");
+    process.exit(2);
+  }
+  const projectDir = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+  const r = loadJob(projectDir, jobId);
+  if (!r.ok) {
+    process.stdout.write(`${r.error}\n`);
+    process.exit(0);
+  }
+  const job = r.value;
+  if (job.status === "running") {
+    process.stdout.write(`job ${job.id} is still running. Wait or /opencode:cancel ${job.id}.\n`);
+    process.exit(0);
+  }
+  if (job.stdout_path) {
+    try {
+      const text = readFileSync(job.stdout_path, "utf8");
+      process.stdout.write(text);
+      if (!text.endsWith("\n")) process.stdout.write("\n");
+    } catch {
+      process.stdout.write(`(no stdout captured for ${job.id})\n`);
+    }
+  } else {
+    process.stdout.write(`(no stdout captured for ${job.id})\n`);
+  }
+  process.stdout.write(`\n---\nstatus: ${job.status} (exit ${job.exit_code})\n`);
+  process.exit(0);
+}
+
+function runCancel(rawArgs) {
+  const argv = rawArgs.flatMap((a) => splitArgs(a));
+  const jobId = argv.find((a) => a.startsWith("job_"));
+  if (!jobId) {
+    process.stderr.write("cancel requires a job id (e.g., cancel job_abc123)\n");
+    process.exit(2);
+  }
+  const projectDir = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+  const r = loadJob(projectDir, jobId);
+  if (!r.ok) {
+    process.stdout.write(`${r.error}\n`);
+    process.exit(0);
+  }
+  const job = r.value;
+  if (job.status === "completed" || job.status === "cancelled" || job.status === "failed") {
+    process.stdout.write(`job ${job.id} is already ${job.status} — no-op\n`);
+    process.exit(0);
+  }
+
+  const upd = updateJob(projectDir, job.id, {
+    status: "cancelled",
+    finished_at: new Date().toISOString(),
+  }, { expectedStatus: "running" });
+  if (!upd.ok) {
+    const after = loadJob(projectDir, job.id);
+    process.stdout.write(`job ${job.id} finished before cancel could apply — status: ${after.value?.status}\n`);
+    process.exit(0);
+  }
+
+  if (!job.pid || !job.pgid) {
+    process.stdout.write(`cancelled job ${job.id} (no recorded pid/pgid — was the supervisor not yet running?)\n`);
+    process.exit(0);
+  }
+  if (!pidIsOurSupervisor(job.pid, job.id)) {
+    process.stdout.write(
+      `cancelled job ${job.id} in state, but pid ${job.pid} is no longer our supervisor ` +
+      `(process gone or pid recycled — refusing to send signals).\n`,
+    );
+    process.exit(0);
+  }
+  if (process.platform !== "linux") {
+    process.stdout.write(
+      `WARNING: macOS cancel uses best-effort PID match (no /proc cmdline). ` +
+      `If pid ${job.pid} was recycled by an unrelated process since the supervisor ` +
+      `started, that unrelated process will receive SIGTERM. macOS-specific ` +
+      `verification via 'ps -o command=' is tracked for plan 002.\n`,
+    );
+  }
+  try { process.kill(-job.pgid, "SIGTERM"); } catch {}
+  const escalator = spawn(
+    process.execPath,
+    [
+      "-e",
+      `
+      const fs = require("node:fs");
+      const pid = ${job.pid};
+      const pgid = ${job.pgid};
+      const jobId = ${JSON.stringify(job.id)};
+      function alive(p) { try { process.kill(p, 0); return true; } catch { return false; } }
+      function ours(p) {
+        if (!alive(p)) return false;
+        if (process.platform !== "linux") return true;
+        try {
+          const cmdline = fs.readFileSync("/proc/" + p + "/cmdline", "utf8");
+          return cmdline.includes("supervisor.mjs") && cmdline.includes(jobId);
+        } catch { return false; }
+      }
+      setTimeout(() => {
+        if (alive(pid) && ours(pid)) {
+          try { process.kill(-pgid, "SIGKILL"); } catch {}
+        }
+      }, 2000);
+      `,
+    ],
+    { detached: true, stdio: "ignore" },
+  );
+  escalator.unref();
+  process.stdout.write(`cancelled job ${job.id} (pgid ${job.pgid}, supervisor pid ${job.pid})\n`);
   process.exit(0);
 }
 
@@ -304,9 +697,21 @@ switch (subcommand) {
   case "prompt":
     runPrompt(rest);
     break;
+  case "run":
+    runRun(rest);
+    break;
+  case "status":
+    runStatus(rest);
+    break;
+  case "result":
+    runResult(rest);
+    break;
+  case "cancel":
+    runCancel(rest);
+    break;
   default:
     process.stderr.write(
-      `Unknown subcommand: ${subcommand ?? "(none)"}.\nUsage: buddy <setup|models|review|prompt> [args...]\n`,
+      `Unknown subcommand: ${subcommand ?? "(none)"}.\nUsage: buddy <setup|models|review|prompt|run|status|result|cancel> [args...]\n`,
     );
     process.exit(2);
 }
