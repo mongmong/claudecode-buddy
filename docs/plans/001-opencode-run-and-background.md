@@ -2254,13 +2254,19 @@ function runCancel(rawArgs) {
   }
   // Kill the entire process group (negative pgid) so opencode dies too.
   try { process.kill(-job.pgid, "SIGTERM"); } catch {}
-  // Escalate to SIGKILL after 2 seconds if any group member still alive.
-  const killTimer = setTimeout(() => {
-    if (isAlive(job.pid)) {
-      try { process.kill(-job.pgid, "SIGKILL"); } catch {}
-    }
-  }, 2000);
-  killTimer.unref();
+  // R4-2: SIGKILL escalation. Originally tried setTimeout+unref, but the
+  // unref'd timer can't keep the process alive across our process.exit(0) —
+  // the escalation never fired. Spawn a tiny detached helper that survives
+  // our exit and sends SIGKILL after 2s if any group member still alive.
+  const escalator = spawn(
+    process.execPath,
+    [
+      "-e",
+      `setTimeout(() => { try { process.kill(-${job.pgid}, "SIGKILL"); } catch {} }, 2000)`,
+    ],
+    { detached: true, stdio: "ignore" },
+  );
+  escalator.unref();
   process.stdout.write(`cancelled job ${job.id} (pgid ${job.pgid}, supervisor pid ${job.pid})\n`);
   process.exit(0);
 }
@@ -2904,10 +2910,12 @@ mkdir -p "${MARKETPLACE_PLUGINS}"
 MARKETPLACE_JSON="${MARKETPLACE_ROOT}/.claude-plugin/marketplace.json"
 mkdir -p "${MARKETPLACE_ROOT}/.claude-plugin"
 
-# R3-4: Use Node (already required by package.json engines) instead of jq for
-# safe JSON construction. JSON.parse + JSON.stringify handle every edge case
-# (quotes, backslashes, newlines, unicode) without any external dependency.
-node --input-type=module -e "
+# R3-4 / R4-1: Use Node (already required by package.json engines) instead of
+# jq for safe JSON construction. JSON.parse + JSON.stringify handle every edge
+# case without external dependencies. The script is delivered via a QUOTED
+# heredoc (<<'NODE') so bash leaves the JS source untouched — no expansion of
+# JS template literals like `${name}` or backticks.
+node --input-type=module - "${WORKSPACE_DIR}" "${MARKETPLACE_JSON}" <<'NODE'
 import { readFileSync, readdirSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -2924,7 +2932,7 @@ for (const name of readdirSync(pluginsRoot)) {
   try {
     manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   } catch (err) {
-    console.error(\`WARNING: \${name} has no readable .claude-plugin/plugin.json (\${err.message}) — skipping\`);
+    console.error(`WARNING: ${name} has no readable .claude-plugin/plugin.json (${err.message}) — skipping`);
     continue;
   }
   plugins.push({
@@ -2932,7 +2940,7 @@ for (const name of readdirSync(pluginsRoot)) {
     description: manifest.description ?? '(no description)',
     version: manifest.version ?? '0.0.0',
     author: { name: 'claudecode-buddy' },
-    source: \`./plugins/\${name}\`,
+    source: `./plugins/${name}`,
   });
 }
 
@@ -2947,7 +2955,7 @@ const marketplace = {
 };
 
 writeFileSync(out, JSON.stringify(marketplace, null, 2) + '\n');
-" "${WORKSPACE_DIR}" "${MARKETPLACE_JSON}"
+NODE
 
 echo "Wrote ${MARKETPLACE_JSON}"
 
@@ -3414,6 +3422,25 @@ R3-7. `[FIXED]` Usage string in companion's default switch case still says `open
 R3-8. `[WONTFIX in plan 001]` `process.title` setting in supervisor is now cosmetic since verification uses argv. → Kept for human-readable `ps` output; comment notes it's not the verification basis.
 R3-9. `[NOTED]` Resolution text for R2-9 says "buddy-supervisor substring" but the code checks `supervisor.mjs`. Code is correct; cosmetic mismatch in resolution text. → Left as-is to preserve the resolution audit trail.
 R3-10. `[NOTED]` `argv.find(a => a.startsWith("job_"))` for job-id extraction in status/result/cancel could misparse a flag starting with `job_`. → Low risk given current arg shapes; flagged for plan 002 if real abuse surfaces.
+
+### Round 4 — 2026-05-04
+
+**Codex verdict:** NEEDS-REVISION (1 BLOCKER, 2 SHOULD-FIX)
+**opencode/deepseek-v4-pro verdict:** APPROVE (1 SHOULD-FIX, convergent with Codex)
+**opencode/glm-5.1 verdict:** (not re-run; APPROVE'd in R3)
+
+**Blocker**
+
+R4-1. `[FIXED]` install-local.sh's Node script is wrapped in a double-quoted bash string. The JS uses template literals (`` `./plugins/${name}` ``) which bash will try to expand BEFORE node sees them — under `set -u` (which the script uses), this fails or silently mangles the source. (Codex)
+   → Resolution: switched to a quoted heredoc (`<<'NODE'`) so bash leaves the JS untouched. Node reads from stdin via `--input-type=module`.
+
+**Should-fix**
+
+R4-2. `[FIXED]` cancel schedules a SIGKILL escalation timer via `setTimeout` with `.unref()`, then immediately `process.exit(0)`. The unref'd timer can't keep the process alive, so the escalation never fires. SIGTERM-resistant supervisors stay alive while the user is told the job was cancelled. (Codex)
+   → Resolution: SIGKILL escalation is now performed by a tiny detached helper spawned from cancel. The helper sleeps 2s, then sends SIGKILL to the negative pgid if any group member is still alive. Cancel's main process exits immediately; the helper outlives it.
+
+R4-3. `[FIXED]` Spec says install path is `~/.claude/plugins/marketplaces/local/`, plan says `~/.claude/plugins/marketplaces/claudecode-buddy-local/`. (Codex + deepseek convergent)
+   → Resolution: spec updated to `claudecode-buddy-local/`.
 
 ---
 

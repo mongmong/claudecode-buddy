@@ -248,7 +248,7 @@ This differs from `review` (which has a hybrid trailer because the dual-review g
 
 #### Local install
 
-Plan 001 ships `scripts/install-local.sh` (workspace-level, not plugin-level) that symlinks `plugins/opencode/` into `~/.claude/plugins/marketplaces/local/plugins/opencode/`, creating the local marketplace dir and a minimal `marketplace.json` if missing. Idempotent — re-running upgrades the symlink. Companion `uninstall-local.sh` removes the symlink.
+Plan 001 ships `scripts/install-local.sh` (workspace-level, not plugin-level) that symlinks `plugins/opencode/` into `~/.claude/plugins/marketplaces/claudecode-buddy-local/plugins/opencode/`, creating the local marketplace dir and a `marketplace.json` matching the openai-codex shape (constructed safely via Node, no jq dependency). Idempotent — re-running upgrades the symlink. Companion `uninstall-local.sh` removes the symlink. The marketplace is named `claudecode-buddy-local` (not the generic `local`) to avoid namespace collisions with other workspaces' local marketplaces.
 
 This unblocks dogfooding: after install, the `opencode:opencode-review` and `opencode:opencode-run` subagents and `/opencode:*` slash commands become available in Claude Code without needing a published marketplace. Marketplace publishing is deferred to a later plan.
 
