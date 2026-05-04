@@ -3745,4 +3745,74 @@ All R5 fixes verified intact (path prose, cached models output, parseReviewArgs 
 
 ## Post-execution report
 
-(Filled in at the end of execution per Phase 8, Task 8.3. Followed by HANDOFF.md retirement in Task 8.4.)
+**Date:** 2026-05-03
+**Branch:** `feature/plan-000-opencode-plugin-scaffold`
+**Author:** Claude (Opus 4.7, 1M context)
+
+### What was implemented
+
+All 8 phases ship as planned:
+
+| Phase | Component | Commits |
+|---|---|---|
+| 1 | Plugin scaffold (manifest + dirs) + CLAUDE.md rewrite | `4fe16da`, `d15b82e` |
+| 2 | Companion utilities: prompt, scope+git, trailer, list-models, schema | `453a500`, `524c016`, `98340a2`, `54c54f6` |
+| 3 | Setup + models subcommands (cli-detection, config-detection) | `7f3aa61`, `5653534` |
+| 4 | Review + prompt subcommands (invoke, args/splitArgs, full companion) | `712493e`, `208a91c` |
+| 5 | `/opencode:setup` and `/opencode:review` slash commands | `fdaf22a` |
+| 6 | `opencode-cli-runtime` skill + `opencode-review` subagent | `a6312f0` |
+| 7 | Gated end-to-end tests (`OPENCODE_E2E=1`) | `284470d` |
+| 8 | Plugin README, CHANGELOG, cleanup, post-execution report | `51f33d1`, `a30dd09`, this commit |
+
+Plus a mid-plan workflow change committed as `369468c`: pin specific opencode models for plan and code reviews (deepseek/deepseek-v4-pro for plan reviews; deepseek/deepseek-v4-flash and volcengine-plan/glm-5.1 for code reviews).
+
+### Test counts
+
+- **78 tests total**, 75 pass + 3 e2e skipped (gated behind `OPENCODE_E2E=1`).
+- Coverage by file:
+  - `args.test.mjs` — 5 (splitArgs)
+  - `cli-detection.test.mjs` — 2
+  - `config-detection.test.mjs` — 4
+  - `invoke.test.mjs` — 8 (parsing, timeout, SIGKILL, multi-message)
+  - `list-models.test.mjs` — 5
+  - `models-cmd.test.mjs` — 2
+  - `prompt-cmd.test.mjs` — 10
+  - `prompt.test.mjs` — 4 (buildReviewPrompt)
+  - `review-cmd.test.mjs` — 10 (incl. mixed-args + last-occurrence-wins)
+  - `scope.test.mjs` — 12 (resolveScope + getDiff)
+  - `setup-cmd.test.mjs` — 3
+  - `trailer.test.mjs` — 10
+  - `e2e.test.mjs` — 3 (skipped without `OPENCODE_E2E=1`)
+
+### Deviations from the plan
+
+- **One test had to be revised mid-execution.** `tests/opencode/scope.test.mjs` originally used `git commit --allow-empty` to simulate branch divergence, but `git diff main...HEAD` returns empty for empty commits, so `hasBranchDivergence` correctly returned false. Fixed by giving the feature branch a real file change. This is correct behavior in the implementation, not a bug — the plan's test design was pedagogical-incorrect.
+- **`runCompanion` test helper had to use `process.execPath` instead of `"node"`.** Tests that override `PATH` to simulate a missing opencode binary inadvertently broke the spawn of node itself. Switching to absolute node path fixes this without affecting the production code path. Plan didn't anticipate this.
+- **Stale `.gitkeep` files cleaned up at end of Phase 8.** The plan added them in Task 1.1 to git-track empty dirs but didn't explicitly remove them as real files appeared. Cleaned up in `a30dd09` to keep the tree tidy.
+- **Mid-plan workflow change for review model pinning.** User requested specific opencode models for plan and code reviews after Phase 1 was already committed. Captured as a separate commit (`369468c`) updating CLAUDE.md, docs/code-review.md, and docs/development-workflow.md.
+
+### Known limitations (also documented in the plugin README)
+
+- Non-UTF8 diff content may corrupt prompts (no transcoding).
+- PATH edge cases (dead symlinks, no-execute permission) not handled — fall back to `OPENCODE_BIN`.
+- Single-pass trailer parsing — no retry on malformed JSON.
+- Foreground only with 5-min timeout; background execution lands in plan 001.
+
+### Follow-up items for plan 001
+
+- **Write-capable `/opencode:rescue`** — the user's intent is for opencode to be a full-fledged secondary coding agent, not just a reviewer. Plan 001 adds the rescue subcommand + subagent.
+- **Background execution + lifecycle commands** (`/opencode:status`, `/opencode:result`, `/opencode:cancel`) — long opencode runs currently block the session. Plan 001 adds `--background` and the trio.
+- **Session-lifecycle hooks** (`SessionStart`, `SessionEnd`) for tracking long-running jobs. Plan 001.
+- **Decide on background-job state location** — codex uses `${CLAUDE_PROJECT_DIR}/.codex-companion/`; we'd likely mirror.
+
+### User action required
+
+The new review pipeline pins specific opencode models that may not yet exist in the user's `~/.config/opencode/opencode.json`:
+
+- `deepseek/deepseek-v4-pro` (used by plan reviews)
+- `deepseek/deepseek-v4-flash` (used by code reviews)
+- `volcengine-plan/glm-5.1` (used by code reviews)
+
+The user must add provider entries for `deepseek` (with `deepseek-v4-pro` and `deepseek-v4-flash`) and a `glm-5.1` model under the existing `volcengine-plan` provider before the new review pipeline actually works. The current config has glm-4.7, doubao-seed-code, deepseek-v3.2, kimi-k2.5 but none of the three pinned models.
+
+Until the user adds those models, plan/code review dispatches will fail with a model-not-found error from opencode. The plugin itself is plan-ready; the model availability is the user's config responsibility.
