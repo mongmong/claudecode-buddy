@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+if (process.argv.includes("--version")) {
+  process.stdout.write("mock-opencode-run-success 0.0.0\n");
+  process.exit(0);
+}
 const SESSION = "ses_mock_run_ok";
 const MSG = "msg_mock_run_ok";
 const events = [
