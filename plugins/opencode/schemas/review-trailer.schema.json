@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "opencode review trailer",
+  "description": "Programmatic verdict + blocker list emitted as a fenced JSON block at the end of an opencode review.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "blockers"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approve", "needs-attention"]
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}
