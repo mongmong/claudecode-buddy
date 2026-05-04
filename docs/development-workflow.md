@@ -52,6 +52,14 @@ For **each phase**:
 1. **Implement** — write the code for this phase only.
 2. **Test** — write or update tests following the Testing guidelines. Run all relevant tests. Fix failures before proceeding.
 3. **Self-review** — re-read all modified files. Compare against the plan and `docs/architecture/decisions.md`. Check for consistency, dead code, duplicate logic.
+
+   **This step is not optional.** TDD-passing tests + the external dual-review gate are NOT substitutes for the author's own read. Tests catch behavior regressions but not intent-vs-spec drift; external reviewers catch fresh-eyes issues but lack the author's full context across all modified files. The author's pass routinely catches things the others can't:
+   - Cross-file consistency (the same shape used differently in two places).
+   - Style drift introduced incrementally across phases (`if (!x)` here, `if (x === undefined)` there).
+   - Defensive misses the author *almost* added but talked themselves out of (e.g., closing a child's stdin "because tests pass").
+   - Documentation-vs-code drift (the spec says one thing; the code does another; both pass tests).
+
+   Skipping self-review and relying on tests + external reviewers as backstops is a recurring temptation when execution is moving fast. Don't. Even a 60-second per-phase re-read of `git diff HEAD~1` catches issues that would otherwise survive into the code-review round.
 4. **Document** — update `docs/` and affected `README.md` files for this phase's changes.
 5. **Commit** — only after tests pass and self-review is clean. Commit code, tests, and docs together.
 
@@ -66,7 +74,7 @@ When a test fails or behavior is unexpected, debug systematically: reproduce the
 After all phases are complete, verify the whole before moving on.
 
 1. Run the **full** test suite (not just changed tests). All must pass.
-2. Check cross-phase consistency: duplicated code, inconsistent patterns, missed edge cases.
+2. Check cross-phase consistency: duplicated code, inconsistent patterns, missed edge cases. As with Step 3.3, this is a *separate* read pass — not a thing you can claim to have done by virtue of the test suite passing. If you skipped per-phase self-reviews during the Build step, this is your last chance to catch what would otherwise reach the code-review round.
 3. Compare actual test coverage against the plan's testing plan. Add any missing tests.
 4. If issues are found, fix them following the Build step's per-phase process.
 
