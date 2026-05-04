@@ -46,9 +46,9 @@ plugins/opencode/
 └── CHANGELOG.md
 ```
 
-The **companion script** (`scripts/opencode-companion.mjs`) is the single point of contact with the opencode CLI.
-Slash commands and subagents are thin wrappers that invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-companion.mjs" <subcommand> <args>` and return its stdout.
-This mirrors the codex plugin's `codex-companion.mjs` and concentrates all opencode-specific logic (prompt construction, output parsing, schema validation, error handling) in one auditable file.
+The **companion script** (`scripts/buddy.mjs`, named per D-009; was `scripts/opencode-companion.mjs` until plan 001) is the single point of contact with the opencode CLI.
+Slash commands and subagents are thin wrappers that invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" <subcommand> <args>` and return its stdout.
+This concentrates all opencode-specific logic (prompt construction, output parsing, schema validation, error handling) in one auditable file. The codex plugin uses the equivalent `codex-companion.mjs`; we deliberately use a different name to avoid visual collision and to align with the workspace name.
 
 ### Slash commands vs. subagents
 
@@ -62,7 +62,7 @@ This mirrors the codex plugin's `codex-companion.mjs` and concentrates all openc
 User: /opencode:review
   → Claude reads commands/review.md
   → Claude estimates diff size with `git diff --shortstat`
-  → Claude invokes: node scripts/opencode-companion.mjs review <args>
+  → Claude invokes: node scripts/buddy.mjs review <args>
     → Companion script:
       1. Resolves repo root, base ref, scope
       2. Retrieves diff (staged + unstaged + untracked-from-disk for working-tree;
@@ -91,7 +91,7 @@ Orchestrator Claude session
     → Subagent reads opencode-cli-runtime skill
     → Subagent: writes prompt body to a temp file via heredoc with quoted delimiter
       (no Bash interpolation of prompt content), then one Bash call:
-      `node scripts/opencode-companion.mjs prompt --prompt-file /tmp/X`
+      `node scripts/buddy.mjs prompt --prompt-file /tmp/X`
       → Companion script:
         1. Reads prompt text from --prompt-file
         2. Spawns opencode run with the prompt text verbatim (with timeout)
@@ -170,31 +170,96 @@ If the model omits or malforms the trailer, the companion script does *not* re-p
 | `/opencode:setup` | Slash command, structural CLI + config check |
 | `opencode:opencode-review` | Subagent for programmatic review dispatch |
 | `opencode-cli-runtime` | Internal skill, runtime contract |
-| `scripts/opencode-companion.mjs` | Subcommands: `review`, `prompt`, `setup`, `models` |
+| `scripts/opencode-companion.mjs` | Subcommands: `review`, `prompt`, `setup`, `models` (renamed to `scripts/buddy.mjs` in plan 001 per D-009) |
 | `schemas/review-trailer.schema.json` | Hybrid-output trailer schema |
 | Tests at workspace `tests/opencode/` | `node:test` smoke + parse coverage |
 | `CLAUDE.md` rewrite | Drop "review-only" framing; recast as phased full-fledged plugin |
 
 Permissions: review commands always pass `--dangerously-skip-permissions` to opencode (read-only, runs in trusted local repo).
 
-### Plan 001 — write-capable rescue + background tasks (placeholder)
+### Plan 001 — write-capable run + background tasks + local install
 
-Adds:
+Adds the second major capability slice: opencode can now *write code* in the user's repo, not just review it. Background-job machinery becomes necessary because write-capable tasks can run long enough to block the Claude Code session if foreground-only.
 
-- `/opencode:rescue` — write-capable task delegation, defaults to `--write` (opencode edits files in the repo).
-- `--background` execution flag on `review` and `rescue` (Claude Code background `Bash` task).
-- `/opencode:status`, `/opencode:result`, `/opencode:cancel` — background-job lifecycle commands.
-- `opencode:opencode-rescue` subagent — write-capable counterpart to `opencode-review`.
-- Session-lifecycle hooks (`SessionStart`, `SessionEnd`) for tracking long-running jobs across the session boundary.
-- Companion script grows to support persistent job state (mirroring codex's job-storage pattern).
+Surface:
 
-Permissions: `rescue` requires explicit user confirmation before passing `--dangerously-skip-permissions`; otherwise opencode's own permission prompts apply.
+| Component | Surface |
+|---|---|
+| `/opencode:run` | Slash command, foreground or `--background`, write-capable |
+| `/opencode:status` | Slash command, lists active and recent jobs in the repo |
+| `/opencode:result` | Slash command, shows stored final output for a finished job |
+| `/opencode:cancel` | Slash command, kills an in-flight background job |
+| `opencode:opencode-run` | Subagent for programmatic write-capable dispatch |
+| `scripts/buddy.mjs` | Renamed from `opencode-companion.mjs`. Adds subcommands: `run`, `status`, `result`, `cancel` |
+| `scripts/lib/jobs.mjs` | New utility for job CRUD (create, load, update, list, cancel) |
+| `hooks/hooks.json` + handlers | New `SessionStart` and `SessionEnd` hooks for orphan detection |
+| `<project>/.claudecode-buddy/opencode/jobs/<id>.json` | New runtime state location (per D-008) |
+| `scripts/install-local.sh`, `scripts/uninstall-local.sh` | Workspace-level scripts for symlink-based local install |
+| `.gitignore` | Adds `.claudecode-buddy/` |
 
-Open questions to resolve when plan 001 is drafted:
+Naming: the slash command and subagent use `run` (not `rescue`) — opencode is a *primary* delegation target for the user, not a "Claude got stuck, opencode rescue us" fallback. The verb matches the underlying CLI (`opencode run ...`).
 
-- Where does background-job state live? (Codex uses `${CLAUDE_PROJECT_DIR}/.codex-companion/`; we'd mirror.)
-- How do we signal completion to the user? (Codex prints a "ready" line on `Stop`; we may want the same.)
-- Does `rescue` get its own structured output schema, or does it return free-form Markdown like codex does?
+#### Permission posture (--yolo opt-in)
+
+Write-capable opencode runs in a user's repo are a real footgun if auto-approved. The plugin defaults to honoring opencode's own permission prompts (which block on each write/exec). Users opt into auto-approve with `--yolo`:
+
+- `/opencode:run "fix the bug"` → opencode prompts before each write; slash command surfaces prompts to the user.
+- `/opencode:run --yolo "fix the bug"` → companion passes `--dangerously-skip-permissions` to opencode; opencode writes without prompting.
+
+For the `opencode:opencode-run` subagent, the orchestrator must explicitly include `--yolo` in the bash command for auto-approve. Otherwise opencode prompts will block the subagent and surface as stderr/timeout.
+
+Mirrors how `sudo`, `rm -i` vs `rm -f`, etc. work — safe by default, opt-in to skip safeguards.
+
+#### Background-job state and lifecycle
+
+Background jobs persist state to `<project>/.claudecode-buddy/opencode/jobs/<job-id>.json`. The directory `<project>/.claudecode-buddy/` is the *workspace convention* for plugin runtime state — future plugins (e.g., a hypothetical `aider` plugin) write to `<project>/.claudecode-buddy/<plugin-name>/...`. Recorded as architecture decision D-008.
+
+Each job record:
+
+```json
+{
+  "id": "job_<timestamp>_<random>",
+  "kind": "run" | "review",
+  "model": "provider/model-id",
+  "started_at": "ISO-8601",
+  "finished_at": "ISO-8601 | null",
+  "status": "running" | "completed" | "cancelled" | "failed" | "session-ended",
+  "pid": 12345,
+  "exit_code": 0 | null,
+  "stdout_path": ".claudecode-buddy/opencode/jobs/<id>.stdout",
+  "stderr_path": ".claudecode-buddy/opencode/jobs/<id>.stderr",
+  "summary": "first line of opencode output (for status table)"
+}
+```
+
+Hooks for cross-session orphan detection:
+
+- `SessionStart` — scans `jobs/` for entries with `status: "running"` whose pid is no longer alive (or whose status was marked `session-ended` by a prior SessionEnd). Prints a one-line orphan summary so the user can decide to `result`/`cancel`/ignore.
+- `SessionEnd` — marks all `status: "running"` jobs as `status: "session-ended"`. Distinguishes "was actually still running when the session ended" from "abandoned mid-flight".
+
+The `Stop` hook (codex uses it for the optional review gate) is *not* implemented in plan 001. Deferred to plan 002 since it conflates "session ending" with "review gate" — codex coupled them; we don't have to.
+
+#### Output for `/opencode:run`
+
+Free-form Markdown only — no JSON trailer. A write-capable task's "verdict" is "did opencode finish, and what files changed?", not a binary approve/needs-attention. The user reads the prose and runs `git diff` to see changes. The orchestrator (when dispatching the subagent programmatically) can also `git diff` after the subagent returns — no schema needed for that.
+
+This differs from `review` (which has a hybrid trailer because the dual-review gate needs a programmatic verdict signal). Keeping `run`'s output unstructured matches codex's `task` behavior and avoids forcing structured output through models that may not produce it reliably for write-capable workflows.
+
+#### Local install
+
+Plan 001 ships `scripts/install-local.sh` (workspace-level, not plugin-level) that symlinks `plugins/opencode/` into `~/.claude/plugins/marketplaces/local/plugins/opencode/`, creating the local marketplace dir and a minimal `marketplace.json` if missing. Idempotent — re-running upgrades the symlink. Companion `uninstall-local.sh` removes the symlink.
+
+This unblocks dogfooding: after install, the `opencode:opencode-review` and `opencode:opencode-run` subagents and `/opencode:*` slash commands become available in Claude Code without needing a published marketplace. Marketplace publishing is deferred to a later plan.
+
+#### Companion runtime entry point: `buddy.mjs`
+
+Plan 001 renames `plugins/opencode/scripts/opencode-companion.mjs` to `plugins/opencode/scripts/buddy.mjs` (D-009). Future plugins follow the same convention: each plugin's runtime entry point is `scripts/buddy.mjs`. Reasons:
+
+- Aligns with the workspace name (`claudecode-buddy`) and the new state-dir convention (`.claudecode-buddy/`).
+- Reduces visual collision with codex's `codex-companion.mjs` for users who have both plugins open.
+- Generic file name + parent directory (`plugins/<name>/scripts/buddy.mjs`) reads cleanly and the parent dir disambiguates in editor quick-open.
+
+Trade-off: two plugins with identically-named `buddy.mjs` files. Acceptable; the parent dir is always present in any reasonable navigation context.
 
 ### Plan 002 — adversarial-review + hooks (placeholder)
 
@@ -220,7 +285,7 @@ The test harness lives at workspace root (`tests/`), not per-plugin, so future p
 
 Three test tiers:
 
-1. **Unit** — pure functions inside `opencode-companion.mjs` (prompt construction, JSON trailer extraction, schema validation, scope resolution). No subprocess. Always run in CI.
+1. **Unit** — pure functions inside `scripts/lib/*.mjs` (prompt construction, JSON trailer extraction, schema validation, scope resolution, model listing, job CRUD). No subprocess. Always run in CI.
 2. **Integration with mock opencode** — companion script invoked as a subprocess, with `OPENCODE_BIN` overridden to point at a fixture script that prints canned responses. Exercises the full pipeline minus the real CLI. Always run in CI.
 3. **End-to-end with real opencode** — companion script invoked against a real `opencode run` call with a tiny prompt and the cheapest configured model. Gated behind `OPENCODE_E2E=1` env var. Run locally before each PR; not in CI until provider creds are available.
 

@@ -69,6 +69,28 @@ Schemas under `schemas/` are documentation-only references. Runtime validation u
 
 Why: the v1 trailer schema is tiny (one enum field + a string array); a dependency would add ~500 KB of `node_modules` for a 20-line validator and force the workspace into lockfile management.
 
+## D-008 — Workspace-shared plugin runtime state directory
+
+**Decided in:** plan 001 (`docs/plans/001-opencode-run-and-background.md`).
+**Spec:** `docs/specs/opencode-plugin.md` → "Background-job state and lifecycle".
+
+Plugin runtime state (background-job records, transient caches, etc.) lives at `<project>/.claudecode-buddy/<plugin-name>/...`. The top-level `.claudecode-buddy/` directory is the workspace convention; each plugin gets a subdirectory under it.
+
+Why: future plugins (e.g., a hypothetical `aider` or `cursor-cli` plugin) share the same state-dir convention, enabling cross-plugin features later (e.g., a workspace-level `/buddy:status` aggregating jobs across plugins) without migration. Per-plugin subdirs keep each plugin's state isolated until such a feature is built.
+
+`.claudecode-buddy/` is always gitignored.
+
+## D-009 — Plugin runtime entry point is `scripts/buddy.mjs`
+
+**Decided in:** plan 001.
+**Spec:** `docs/specs/opencode-plugin.md` → "Companion runtime entry point: buddy.mjs".
+
+Each plugin's Node companion script is named `scripts/buddy.mjs` (not `<plugin>-companion.mjs`).
+
+Why: aligns with the workspace name (`claudecode-buddy`) and the state-dir convention (`.claudecode-buddy/`). Reduces visual collision with codex's `codex-companion.mjs`. Generic file name + parent directory (`plugins/<name>/scripts/buddy.mjs`) is cleanly disambiguated by the parent dir in any reasonable editor navigation context.
+
+Plan 001 renames the existing `plugins/opencode/scripts/opencode-companion.mjs` to `plugins/opencode/scripts/buddy.mjs` and updates all references (slash commands, subagents, skill, tests, docs). All future plugins adopt the same name from the start.
+
 ---
 
 ## How to add a decision
