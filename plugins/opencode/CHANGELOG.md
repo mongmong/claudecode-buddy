@@ -2,6 +2,24 @@
 
 All notable changes to the opencode plugin are documented here.
 
+## 0.5.0 — `--variant` reasoning-effort flag
+
+### Added
+- `--variant <level>` flag on `/opencode:review`, `/opencode:run`, the `prompt` subcommand, and both subagents (`opencode:opencode-review`, `opencode:opencode-run`). Forwards opencode's `--variant` argument verbatim to the underlying provider — opencode documents `high`, `max`, and `minimal` as common values, but the exact set is provider-specific. The plugin does not validate the value (provider decides what's accepted).
+- `OPENCODE_VARIANT` env var fallback for the `prompt` subcommand (mirrors the existing `OPENCODE_MODEL` pattern). The explicit `--variant` flag wins over the env var.
+- 9 new tests in `tests/opencode/variant.test.mjs` covering forwarding, default-omission, missing-value rejection, duplicate-flag rejection, and env-var fallback / precedence.
+- New fixture `tests/opencode/fixtures/mock-opencode-record-args.mjs` — records `process.argv` to `$OPENCODE_RECORD_ARGS_PATH` so tests can assert exactly what's forwarded to the spawned opencode binary.
+
+### Changed
+- `parseReviewArgs`, `parseRunArgs`, `parsePromptArgs` accept `--variant`. `parseRunArgs` extends its duplicate-flag guard to cover `--variant`.
+- `runReview`, `runRun` (foreground), `runRunBackground`, and `invokeOpencode` push `--variant <value>` after `--model` in the spawned argv when set.
+- `--variant` does NOT change the session-continuity tuple (key still `(plan-or-branch, role, model)`), so a single session can mix variant levels across rounds.
+
+### Test counts
+- v0.4.0 baseline: 234 tests (231 pass + 3 e2e skipped).
+- v0.5.0 adds: 9 variant tests.
+- v0.5.0: **243 tests pass**, 3 e2e skipped, 0 fail.
+
 ## 0.4.0 — Adversarial-style review + opt-in Stop-hook gate
 
 Implemented per `docs/plans/003-review-experience.md`. Plan converged after 5 rounds of Codex review + 5 rounds of opencode/deepseek-v4-pro review. Both reviewers approved at round 5.

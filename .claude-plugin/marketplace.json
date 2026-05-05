@@ -11,7 +11,7 @@
     {
       "name": "opencode",
       "description": "Use opencode from Claude Code to review code with whichever LLM you have configured. See plugins/opencode/README.md for the full feature list and CHANGELOG for what's new in each release.",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "author": {
         "name": "claudecode-buddy"
       },

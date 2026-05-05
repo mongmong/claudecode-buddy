@@ -1,6 +1,6 @@
 ---
 description: Delegate a write-capable coding task to opencode (foreground or --background)
-argument-hint: '[--task <text> | --task-file <path>] [--model <provider/model>] [--yolo] [--background] [--session-key <name>] [--reset] [--no-session]'
+argument-hint: '[--task <text> | --task-file <path>] [--model <provider/model>] [--variant <high|max|minimal|...>] [--yolo] [--background] [--session-key <name>] [--reset] [--no-session]'
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
@@ -46,7 +46,11 @@ Output handling:
 
 Argument handling:
 - Preserve the user's arguments exactly (apart from injecting the model picker's choice).
-- Supported flags: `--task`, `--task-file`, `--model`, `--yolo`, `--background`, `--session-key`, `--reset`, `--no-session`. Unknown flags or unexpected positional args are rejected with exit 2 — surface the error verbatim.
+- Supported flags: `--task`, `--task-file`, `--model`, `--variant`, `--yolo`, `--background`, `--session-key`, `--reset`, `--no-session`. Unknown flags or unexpected positional args are rejected with exit 2 — surface the error verbatim.
+
+Reasoning effort (v0.5.0+):
+- Pass `--variant <level>` to select a provider-specific reasoning effort (e.g. `high`, `max`, `minimal`). The exact set is provider-defined; opencode forwards the value unchanged.
+- Useful for tasks where you want a deeper or cheaper pass without switching models. Honored only by providers that expose reasoning variants.
 
 Session continuity (v0.3.0+):
 - By default, this command **resumes the prior opencode session** scoped to `(plan-or-branch, role=run, model)`. Successive runs on the same plan/branch share the prior context — useful for "continue where I left off" iterations.

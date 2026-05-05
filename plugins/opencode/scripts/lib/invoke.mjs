@@ -98,11 +98,13 @@ export function invokeOpencode({
   prompt,
   cwd,
   model,
+  variant,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 }) {
   return new Promise((resolveResult) => {
     const args = ["run", "--dangerously-skip-permissions", "--format", "json", "--dir", cwd];
     if (model) args.push("--model", model);
+    if (variant) args.push("--variant", variant);
     args.push(prompt);
 
     let child;

@@ -122,6 +122,20 @@ blockers:
 - A default `model` field in `~/.config/opencode/opencode.json`.
 - Linux for full `/opencode:cancel` PID-reuse defenses (macOS uses best-effort kill — see Known limitations).
 
+## Reasoning effort (v0.5.0+)
+
+`/opencode:review` and `/opencode:run` (and the `opencode:opencode-review` / `opencode:opencode-run` subagents) accept `--variant <level>`. The flag forwards opencode's `--variant` argument verbatim to the underlying provider — opencode documents `high`, `max`, and `minimal` as common values, but the exact set is provider-specific. Examples:
+
+```bash
+/opencode:review --variant max --model deepseek/deepseek-v4-pro
+/opencode:run --variant minimal --task "tweak this comment"
+```
+
+- The flag is **provider-specific reasoning effort**, not a model selector. Pair it with `--model` when you want both pinned.
+- Not all providers honor `--variant`; check your provider's docs. Unsupported values are silently dropped by some providers.
+- `--variant` does NOT change the session-continuity tuple (key still `(plan-or-branch, role, model)`), so you can mix variant levels across rounds of the same session.
+- The `prompt` subcommand also reads `OPENCODE_VARIANT` from the environment when `--variant` is not passed (useful for setting a default in CI).
+
 ## Environment overrides (mostly for testing)
 
 | Variable | Effect |
@@ -131,6 +145,7 @@ blockers:
 | `OPENCODE_REPO_ROOT` | Override the working directory the companion script reviews. |
 | `CLAUDE_PROJECT_DIR` | Override the project root used to resolve `<project>/.claudecode-buddy/`. Set automatically by Claude Code; tests override. |
 | `OPENCODE_MODEL` | Override the model used by the `prompt` subcommand (the `review` and `run` subcommands use their own `--model` flag). |
+| `OPENCODE_VARIANT` | Override the reasoning-effort variant used by the `prompt` subcommand when `--variant` isn't passed. |
 | `OPENCODE_BUDDY_FORCE_INTERACTIVE=1` | Bypass the non-interactive `--yolo` guard in `runRun` (test-only). |
 | `OPENCODE_E2E=1` | Enable end-to-end tests against the real opencode CLI. |
 
