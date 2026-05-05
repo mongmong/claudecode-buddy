@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { detectOpencode } from "./lib/cli-detection.mjs";
 import { detectConfig, defaultConfigPath } from "./lib/config-detection.mjs";
+import { loadConfig, updateConfig } from "./lib/config.mjs";
 import { resolveScope, getDiff } from "./lib/scope.mjs";
 import { buildReviewPrompt } from "./lib/prompt.mjs";
 import { invokeOpencode, invokeOpencodeRaw } from "./lib/invoke.mjs";
@@ -885,6 +886,41 @@ function runCancel(rawArgs) {
   process.exit(0);
 }
 
+function runGate(rawArgs) {
+  const argv = rawArgs.flatMap((a) => splitArgs(a));
+  const action = (argv[0] ?? "status").toLowerCase();
+  const projectDir = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+
+  if (action === "status") {
+    const cfg = loadConfig(projectDir);
+    if (!cfg.ok) {
+      process.stderr.write(`${cfg.error}\n`);
+      process.exit(1);
+    }
+    process.stdout.write(`Stop-hook review gate: ${cfg.value.stopReviewGate ? "ON" : "OFF"}\n`);
+    process.exit(0);
+  }
+
+  if (action === "on" || action === "off") {
+    const r = updateConfig(projectDir, { stopReviewGate: action === "on" });
+    if (!r.ok) {
+      process.stderr.write(`${r.error}\n`);
+      process.exit(1);
+    }
+    process.stdout.write(`Stop-hook review gate set to ${action.toUpperCase()}.\n`);
+    if (action === "on") {
+      process.stdout.write(
+        `On the next 'Stop' event (Claude finishes a turn), the gate will run a review of the working-tree state ` +
+        `and the assistant's last message. Use '/opencode:gate off' to disable.\n`,
+      );
+    }
+    process.exit(0);
+  }
+
+  process.stderr.write(`unknown gate action: ${action}. Use: on, off, status.\n`);
+  process.exit(2);
+}
+
 const subcommand = process.argv[2];
 const rest = process.argv.slice(3);
 
@@ -913,9 +949,12 @@ switch (subcommand) {
   case "cancel":
     runCancel(rest);
     break;
+  case "gate":
+    runGate(rest);
+    break;
   default:
     process.stderr.write(
-      `Unknown subcommand: ${subcommand ?? "(none)"}.\nUsage: buddy <setup|models|review|prompt|run|status|result|cancel> [args...]\n`,
+      `Unknown subcommand: ${subcommand ?? "(none)"}.\nUsage: buddy <setup|models|review|prompt|run|status|result|cancel|gate> [args...]\n`,
     );
     process.exit(2);
 }
