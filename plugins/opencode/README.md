@@ -15,10 +15,48 @@ Claude Code plugin that wraps the [opencode](https://opencode.ai) CLI as a third
 
 - v0.1.0 (plan 000, shipped) — read-only review only.
 - v0.2.0 (plan 001, shipped) — write-capable run + background tasks + local install scripts.
-- v0.3.0 (this release, plan 002) — review session continuity for `/opencode:review` and `/opencode:run` (resume the prior opencode session per `(plan-or-branch, role, model)` tuple); `--session-key` / `--reset` / `--no-session` flags; pure mkdir-EEXIST lock (manual-rm recovery for stranded locks; auto-reclaim queued for plan 004).
-- v0.4.0 (plan 003) — adversarial-review + optional Stop-hook review gate; macOS cancel support; flock(2)-backed serialization for SessionEnd vs supervisor races.
+- v0.3.0 (plan 002, shipped) — review session continuity for `/opencode:review` and `/opencode:run` (resume the prior opencode session per `(plan-or-branch, role, model)` tuple); `--session-key` / `--reset` / `--no-session` flags; pure mkdir-EEXIST lock (manual-rm recovery for stranded locks; auto-reclaim queued for plan 005).
+- v0.4.0 (this release, plan 003) — `--style adversarial` flag on `/opencode:review` for hostile-perspective critique; opt-in Stop-hook review gate (`/opencode:gate on|off|status`) that runs a review on every actionable Claude turn with smart-skip for read-only turns + fail-open recovery.
+- v0.5.0 (plan 004) — macOS parity for `/opencode:cancel` PID-reuse defense + `--task-file` TOCTOU + `--task` stdin-as-prompt support.
+- v0.6.0+ (plan 005) — `flock(2)`-backed serialization replacing best-effort CAS in `lib/jobs.mjs` + the mkdir-EEXIST session lock.
 
 See `docs/specs/opencode-plugin.md`, `docs/plans/001-opencode-run-and-background.md`, and `docs/plans/002-review-session-continuity.md` in the workspace for design and implementation details.
+
+## Adversarial review (v0.4.0+)
+
+`/opencode:review` accepts `--style <friendly|adversarial>`. Default is `friendly` (the v0.3.0 behavior — looks for issues, approves when sound). `--style adversarial` switches to a hostile-reviewer perspective: assumes the code is broken in ways the friendly reviewer missed, hunts for edge cases, race conditions, hidden assumptions, and silent failures.
+
+```bash
+/opencode:review --style adversarial --model deepseek/deepseek-v4-pro
+```
+
+- Adversarial reviews run under a separate session-continuity tuple (`role=review-adversarial`), so the adversarial reviewer's history doesn't pollute the friendly reviewer's. Two parallel session histories per `(plan-or-branch, model)` is intentional.
+- Pair with friendly review for stronger consensus: in plan-review or code-review pipelines, run both perspectives and consolidate findings.
+- Prompt template at `prompts/adversarial-review.md` — edit to tune the adversarial framing for your codebase.
+
+## Stop-hook review gate (v0.4.0+, opt-in)
+
+Optional safety net that auto-runs a review on every Claude Code `Stop` event. Default OFF.
+
+```bash
+/opencode:gate on       # enable
+/opencode:gate off      # disable
+/opencode:gate status   # check current state
+```
+
+When ON: every actionable turn (where the working tree has changes) triggers a review of the diff + the assistant's last message. Verdict `needs-attention` blocks Claude's stop with the findings; `approve` passes through silently.
+
+**Smart-skip behavior** (no review runs in these cases):
+- Working tree is clean — `git status --porcelain` returns empty (read-only conversation turns).
+- Only changes are under `.claudecode-buddy/` — the dispatcher's own session-id writes during plan/code review work (avoids reviewing the reviewer's session state).
+- Non-git workspace where `.git/` is missing — gate runs without git-state filter (lets the reviewer use Read/Glob/Grep).
+- Git binary missing or wedged (`.git/index.lock` contention, etc.) — skip with stderr log; don't run a review against broken git.
+
+**Fail-open semantics:** if the review system itself errors (binary missing, model API down, trailer parse failure), the hook logs a warning to stderr and lets Claude proceed. Better to occasionally let through a bad turn than to permanently strand the user when the review system breaks.
+
+**Threat model:** this is an advisory development gate, NOT a security control. For genuine security gating, use a CI-level enforcement.
+
+**Cost:** every actionable turn → one extra opencode invocation. Recommended only for projects/sessions where the safety net is worth the latency + token cost.
 
 ## Session continuity (v0.3.0+)
 

@@ -2,6 +2,46 @@
 
 All notable changes to the opencode plugin are documented here.
 
+## 0.4.0 — Adversarial-style review + opt-in Stop-hook gate
+
+Implemented per `docs/plans/003-review-experience.md`. Plan converged after 5 rounds of Codex review + 5 rounds of opencode/deepseek-v4-pro review. Both reviewers approved at round 5.
+
+### Added
+- `--style <friendly|adversarial>` flag on `/opencode:review`. Default `friendly` (current v0.3.0 behavior). `--style adversarial` prepends the adversarial prompt template (`prompts/adversarial-review.md`) and routes session continuity through `role: review-adversarial` (distinct tuple from `review`). Backwards-compatible — no migration needed for existing usage.
+- Opt-in Stop-hook review gate. When enabled (`/opencode:gate on`), every Claude Code `Stop` event runs a review of the working-tree state + the assistant's last message via `dispatchOpencode`; `needs-attention` verdicts block Claude's stop with `{decision:"block", reason:...}`. Smart-skips read-only turns (no git changes) AND turns where the only changes are the dispatcher's own session-id writes under `.claudecode-buddy/`. Fails open on review-system errors.
+- `/opencode:gate on|off|status` slash command — workspace toggle for the Stop-hook gate.
+- `lib/config.mjs` — workspace plugin config CRUD (`<project>/.claudecode-buddy/opencode/config.json`). Establishes the workspace-config convention from D-011: each plugin owns its own config file under the shared `.claudecode-buddy/` root.
+- `prompts/adversarial-review.md` — hostile-reviewer system prompt template.
+- `prompts/stop-review-gate.md` — Stop-hook gate prompt template (instructs the reviewer to verify assistant claims against the working tree using either git or filesystem inspection).
+- `scripts/stop-review-gate-hook.mjs` — the Stop-hook implementation. ESM ordering matches plan-002 supervisor.mjs (static imports of node:* only, register fail-open handlers, dynamic await imports of own modules).
+- D-011 — Stop-hook review gate is opt-in, fails open, smart-skips read-only turns. Establishes the workspace-config-file convention. Documents the threat-model rationale ("advisory development gate, NOT a security control") for the divergence from codex's fail-closed design.
+
+### Changed
+- `parseReviewArgs` accepts `--style friendly|adversarial`. Unknown values rejected with exit 2.
+- `runReview` forwards `style` to `dispatchOpencode` (passes the matching template via `buildReviewPrompt`) and uses `role: "review-adversarial"` when style=adversarial.
+- `lib/prompt.mjs:buildReviewPrompt` accepts `style` parameter; loads matching prompt template from `plugins/opencode/prompts/<style>-review.md` and prepends it to the canonical review framing. Friendly is no-prefix (zero behavior change vs v0.3.0).
+- `hooks/hooks.json` registers the Stop-hook entry alongside existing SessionStart/SessionEnd hooks. 900s timeout matches codex's; inner dispatcher timeout (5min) fires first in practice.
+
+### Test counts
+- Plan 002 baseline: 205 tests (200 pass, 3 e2e skipped, 2 plan-001 fix tests).
+- Plan 003 adds: 26 new tests (config: 10, --style: 3, gate-cmd: 5, stop-gate: 8).
+- v0.4.0: **231 tests**, 228 pass, 3 e2e skipped.
+
+### Architecture decisions recorded
+- **D-011** — Stop-hook review gate is opt-in, fails open, smart-skips read-only turns via git state. Workspace-config convention: `<project>/.claudecode-buddy/<plugin>/config.json`.
+
+### Known limitations
+- **Edited-then-reverted edge case:** if the assistant claims edits but the working tree is clean (e.g., edits applied then reverted within the same turn), the gate smart-skips. The reviewer would have nothing to verify against, so this is correct behavior — but documented so users don't expect the gate to catch it.
+- **Concurrent Claude Code sessions in the same workspace:** both opt-in gates would fire on each Stop. The dispatcher's lock-degraded-mode handles the race correctly (the second gate runs without continuity but doesn't corrupt the first's stored session-id).
+- **Module-load gap:** narrow window between hook `spawn()` and the top-of-file `uncaughtException` handler registering. Static-builtins-only imports minimise this. Same pattern as plan-002 supervisor.mjs.
+- **Soft-skip on assistant-message regex was deliberately dropped** during round 2 (false-positive risk on real change turns). Meta-skip on `.claudecode-buddy/`-only changes covers the dominant reviewer-dispatching case.
+
+### Deferred to future plans
+- Per-session env-var override for the gate (`OPENCODE_BUDDY_STOP_GATE=off`) — plan 005+ if usage shows the workspace flag is too coarse.
+- macOS parity for `pidIsOurSupervisor` and `--task-file` TOCTOU defense — plan 004.
+- `flock(2)`-backed serialization for `lib/jobs.mjs:updateJob` and the session lock — plan 005.
+- `--task` stdin-as-prompt support — plan 004.
+
 ## 0.3.0 — Review session continuity
 
 Implemented per `docs/plans/002-review-session-continuity.md`. Plan converged after 13 rounds of Codex review + 8 rounds of opencode/deepseek-v4-pro review, including a round-6 design pivot that dropped layered stale-lock-reclamation defenses in favour of a pure mkdir-EEXIST primitive with manual-rm recovery (auto-reclamation queued for plan 004).

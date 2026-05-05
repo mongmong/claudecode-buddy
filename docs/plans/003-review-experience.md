@@ -1360,4 +1360,58 @@ Blockers: (1) `resolveWorkspaceRoot` import from non-existent file, (2) `tool_us
 
 ## Post-execution report
 
-(Filled in after Step 5 (Review) lands and before Step 6 (Ship).)
+**Date:** 2026-05-04
+**Branch:** `feature/plan-003-review-experience`
+**Author:** Claude (Opus 4.7, 1M context)
+
+### What was implemented
+
+All 7 phases shipped:
+
+| Phase | Component | Key commit |
+|---|---|---|
+| 1 | `lib/config.mjs` (workspace plugin config CRUD) | `919f94b` |
+| 2 | `--style adversarial` flag + prompt template | `e950f0b` |
+| 3 | `/opencode:gate on\|off\|status` slash command | `a5a1d40` |
+| 4 | `stop-review-gate-hook.mjs` (opt-in + git-state smart-skip + fail-open) | `76b0d06` |
+| 5 | `hooks.json` Stop entry + `prompts/stop-review-gate.md` | `138e99d` |
+| 6 | Slash command + subagent + CLAUDE.md docs | `7c71174` |
+| 7 | CHANGELOG / README / D-011 / version 0.3.0 → 0.4.0 / post-execution report | this commit |
+
+### Test counts
+
+- Plan 002 baseline: 205 tests (200 pass + 3 e2e skipped + 2 plan-001 fixes).
+- Plan 003 adds: 26 new tests (config: 10, gate-cmd: 5, --style: 3, stop-gate: 8).
+- v0.4.0: **231 tests**, 228 pass, 3 e2e skipped.
+
+### Deviations from the plan
+
+- **Phase 1+2 test files combined into one suite** in `tests/opencode/review-cmd.test.mjs` rather than a separate file (the plan suggested either; consolidating with existing review-cmd tests was cleaner).
+- **Existing `setupRepo` helper in stop-gate.test.mjs** intentionally does NOT add `.gitignore` for `.claudecode-buddy/` — most production users haven't gitignored it yet, so the meta-skip path is the realistic test scenario. A separate `gitignoreBuddyDir(dir)` helper is used by the clean-tree test where the gitignore is needed.
+- **No deviations from the plan's design.** The 5 plan-review rounds + 2 round-2 design pivots locked the design; implementation followed it directly.
+
+### Known limitations (also in CHANGELOG + README)
+
+- Edited-then-reverted edge case: gate smart-skips when working tree is clean even if assistant claimed edits.
+- Concurrent Claude Code sessions in the same workspace: dispatcher's lock-degraded-mode handles the race correctly.
+- Module-load gap: narrow window mitigated by static-builtins-only static imports + immediate handler registration.
+- Soft-skip on assistant-message regex was deliberately dropped during round-2 review (false-positive risk).
+
+### Follow-up plans queued
+
+- **Plan 004 — macOS parity + stdin-as-prompt** (formerly part of plan-002 slot before renumbers).
+  - macOS support for `pidIsOurSupervisor` (via `ps -o command=`).
+  - macOS support for `--task-file` TOCTOU defense (via `F_GETPATH` fcntl).
+  - `--task` stdin-as-prompt to bypass macOS ARG_MAX limits.
+- **Plan 005 — Concurrency hardening with `flock(2)`.** Proper at-most-one-holder for `lib/jobs.mjs:updateJob` (replacing best-effort CAS) and `lib/sessions.mjs:acquireSessionLock` (replacing the v0.3.0 mkdir-EEXIST primitive that requires manual-rm recovery for stranded locks).
+- **Plan 006+ — Session continuity polish.** `/opencode:sessions` list/clear, `--fork` flag, auto-prune of stale `.session-id` files.
+
+### User action required
+
+Plan 003 introduces `--style adversarial` and the opt-in Stop-hook gate. To exercise from inside Claude Code:
+
+1. Run `bash scripts/install-local.sh` (already symlinked from plan 001; no re-install needed unless new files were added — they were: `commands/gate.md`, `prompts/`, `scripts/stop-review-gate-hook.mjs`).
+2. Restart Claude Code so the marketplace and plugin reload.
+3. New flag: `/opencode:review --style adversarial`. New slash command: `/opencode:gate on|off|status`. New hook fires automatically when gate is ON.
+
+The previously-pinned models for the dual-review pipeline are unchanged.
