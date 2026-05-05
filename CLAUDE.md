@@ -110,6 +110,10 @@ A plan that hasn't passed both reviews is not ready for execution, regardless of
 
 **Session continuity (v0.3.0+, plan 002):** the opencode subagent automatically resumes the prior session for `(plan-or-branch, role, model)` between rounds, so the reviewer remembers what they said in earlier rounds. No invocation change needed — the dispatcher handles it. If a reviewer's session gets confused, pass `--reset` to start fresh on the next round.
 
+**Adversarial review (v0.4.0+, plan 003):** for plan or code reviews where you want a hostile-perspective second opinion, pair an adversarial reviewer alongside the friendly one — pass `--style adversarial` to `/opencode:review`. Adversarial reviews run under a distinct session-continuity tuple (role=`review-adversarial`) so they don't pollute the friendly reviewer's history. Useful when the friendly review approves but you want a "could this still be wrong?" second pass.
+
+**Stop-hook review gate (v0.4.0+, plan 003, opt-in):** `/opencode:gate on` enables an automatic review on every Claude Code `Stop` event. The gate runs `/opencode:review`-equivalent checks against the working-tree state + the assistant's last message; verdict `needs-attention` blocks Claude's stop with the findings. Smart-skips read-only turns (no git changes) and fails open when the review system itself is broken. `/opencode:gate off` to disable; `/opencode:gate status` to check. Recommended for users who want a safety net but DON'T turn it on for every project — it adds latency and API cost on every actionable turn.
+
 ### Handling hung reviews
 
 opencode runs occasionally hang (model API unresponsive, rate limits, network issue). Symptoms:
