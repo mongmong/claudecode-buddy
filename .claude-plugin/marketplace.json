@@ -1,0 +1,21 @@
+{
+  "name": "claudecode-buddy",
+  "owner": {
+    "name": "claudecode-buddy"
+  },
+  "metadata": {
+    "description": "Plugins for using third-party coding/review CLIs from inside Claude Code. Currently ships the opencode plugin.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "opencode",
+      "description": "Use opencode from Claude Code to review code with whichever LLM you have configured. See plugins/opencode/README.md for the full feature list and CHANGELOG for what's new in each release.",
+      "version": "0.4.0",
+      "author": {
+        "name": "claudecode-buddy"
+      },
+      "source": "./plugins/opencode"
+    }
+  ]
+}

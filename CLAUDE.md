@@ -232,7 +232,7 @@ Do NOT use Codex for implementation, debugging, refactoring, or any coding work.
 opencode is being rolled out in this workspace as a third independent code-review and (eventually) coding agent, alongside Claude and Codex. The plugin lives at `plugins/opencode/` and is built up over phased plans:
 
 - **Phase 1 (plan 000, shipped):** read-only review — `/opencode:review`, `/opencode:setup`, `opencode:opencode-review` subagent. Foreground execution. Used by the dual plan-review gate and code-review process.
-- **Phase 2 (plan 001, this plan):** write-capable run + background tasks — `/opencode:run`, `--background` execution, `/opencode:status` / `/opencode:result` / `/opencode:cancel`, `opencode:opencode-run` subagent. Local install via `scripts/install-local.sh`.
+- **Phase 2 (plan 001, this plan):** write-capable run + background tasks — `/opencode:run`, `--background` execution, `/opencode:status` / `/opencode:result` / `/opencode:cancel`, `opencode:opencode-run` subagent. (Originally shipped with `scripts/install-local.sh` for local-symlink installs; that script was retired in plan 004 in favor of a top-level marketplace.json — see D-012.)
 - **Phase 3 (plan 002):** adversarial-review + optional Stop-hook review gate.
 
 opencode runs whichever LLM the user has configured in `~/.config/opencode/opencode.json`. The plugin is model-agnostic — it never embeds a default model. The user's `~/.config/opencode/opencode.json` must define the models referenced in this workspace's review pipeline:

@@ -2,6 +2,16 @@
 
 Claude Code plugin that wraps the [opencode](https://opencode.ai) CLI as a third independent code-review and write-capable coding agent.
 
+## Install
+
+See the workspace [`README.md`](../../README.md#install) for marketplace registration. Once registered:
+
+```
+/plugin install opencode@claudecode-buddy
+```
+
+then restart Claude Code.
+
 ## What this gives you
 
 - **`/opencode:review`** — code review of the working tree or branch diff. Prompts you to pick a model each invocation (skippable with `--model` in the args).
@@ -14,11 +24,11 @@ Claude Code plugin that wraps the [opencode](https://opencode.ai) CLI as a third
 ## Phasing
 
 - v0.1.0 (plan 000, shipped) — read-only review only.
-- v0.2.0 (plan 001, shipped) — write-capable run + background tasks + local install scripts.
+- v0.2.0 (plan 001, shipped) — write-capable run + background tasks. (Local install scripts shipped here too but were retired in plan 004 — see workspace README + D-012.)
 - v0.3.0 (plan 002, shipped) — review session continuity for `/opencode:review` and `/opencode:run` (resume the prior opencode session per `(plan-or-branch, role, model)` tuple); `--session-key` / `--reset` / `--no-session` flags; pure mkdir-EEXIST lock (manual-rm recovery for stranded locks; auto-reclaim queued for plan 005).
 - v0.4.0 (this release, plan 003) — `--style adversarial` flag on `/opencode:review` for hostile-perspective critique; opt-in Stop-hook review gate (`/opencode:gate on|off|status`) that runs a review on every actionable Claude turn with smart-skip for read-only turns + fail-open recovery.
-- v0.5.0 (plan 004) — macOS parity for `/opencode:cancel` PID-reuse defense + `--task-file` TOCTOU + `--task` stdin-as-prompt support.
-- v0.6.0+ (plan 005) — `flock(2)`-backed serialization replacing best-effort CAS in `lib/jobs.mjs` + the mkdir-EEXIST session lock.
+- v0.5.0 (plan 005) — macOS parity for `/opencode:cancel` PID-reuse defense + `--task-file` TOCTOU + `--task` stdin-as-prompt support. (Plan 004 was reclaimed for the GitHub-installable distribution change — see D-012; macOS parity moved one slot forward.)
+- v0.6.0+ (plan 006) — `flock(2)`-backed serialization replacing best-effort CAS in `lib/jobs.mjs` + the mkdir-EEXIST session lock.
 
 See `docs/specs/opencode-plugin.md`, `docs/plans/001-opencode-run-and-background.md`, and `docs/plans/002-review-session-continuity.md` in the workspace for design and implementation details.
 

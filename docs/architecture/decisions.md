@@ -135,6 +135,22 @@ Three behaviours that diverge from codex's analogous hook:
 
 **ESM ordering for the hook script** (matches plan-002 supervisor.mjs precedent): static imports of `node:*` built-ins ONLY (cannot fail at module load), register `uncaughtException` + `unhandledRejection` handlers, then `await import(...)` for own modules. Throws during own-module load hit the fail-open handlers.
 
+## D-012 — Plugin distribution: top-level marketplace.json, no local-install script
+
+**Decided in:** plan 004 (`docs/plans/004-github-installable.md`).
+
+The repo root contains `.claude-plugin/marketplace.json` listing every plugin under `plugins/` (currently just `opencode`). Claude Code consumes this manifest from either a GitHub source (regular users: `extraKnownMarketplaces["claudecode-buddy"].source = {source: "github", repo: "mongmong/claudecode-buddy"}`) or a filesystem source (developers point at their local checkout). Both paths reach the same manifest, so dogfooding uses the same install mechanism real users use.
+
+Why: prior versions shipped `scripts/install-local.sh`, which symlinked the plugin into a synthetic `~/.claude/plugins/marketplaces/claudecode-buddy-local/` directory and auto-generated a marketplace.json there. The script didn't register the marketplace in `~/.claude/settings.json`'s `extraKnownMarketplaces`, so users still had to manually edit settings to actually enable the plugin — the install was half-done. This was the user-reported bug that motivated plan 004 (after merging plan 003, restarting Claude Code yielded no `/opencode:` commands because the marketplace was never registered). The symlink + auto-marketplace approach also diverged from the real-user install path, masking environment issues a regular user would hit.
+
+The new approach: workspace IS its own marketplace (top-level marketplace.json). One install path, dogfooded by the same mechanism real users use.
+
+Plan 004 deletes `scripts/install-local.sh` and `scripts/uninstall-local.sh`.
+
+**Version coordination:** the plugin version lives in TWO places — `plugins/<name>/.claude-plugin/plugin.json:version` AND `.claude-plugin/marketplace.json:plugins[*].version`. When releasing a new plugin version, both files must be updated. `tests/marketplace-version-sync.test.mjs` enforces this — the test fails if the two values drift, surfacing the mismatch before a release ships with a stale marketplace listing.
+
+**GitHub-source installs track main HEAD.** Tagged releases / version pinning are deferred until a future plan based on usage signal. For early adopters, `git pull` on the marketplace consumer side is the de-facto release mechanism; the version-sync test guarantees the manifest never advertises a version the plugin doesn't actually have.
+
 ---
 
 ## How to add a decision
