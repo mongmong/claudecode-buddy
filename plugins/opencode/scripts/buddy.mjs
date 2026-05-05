@@ -24,10 +24,11 @@ import { listModels } from "./lib/list-models.mjs";
 import { createJob, updateJob, listJobs, loadJob, jobsDir, jobPath, JOB_ID_RE } from "./lib/jobs.mjs";
 
 const VALID_SCOPES = new Set(["auto", "working-tree", "branch"]);
+const VALID_STYLES = new Set(["friendly", "adversarial"]);
 
 function parseReviewArgs(rawArgs) {
   const argv = rawArgs.flatMap((a) => splitArgs(a));
-  const out = { scope: "auto", base: "main", model: null, sessionKey: null, reset: false, noSession: false };
+  const out = { scope: "auto", base: "main", model: null, sessionKey: null, reset: false, noSession: false, style: "friendly" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--scope") {
@@ -53,8 +54,15 @@ function parseReviewArgs(rawArgs) {
       out.reset = true;
     } else if (a === "--no-session") {
       out.noSession = true;
+    } else if (a === "--style") {
+      const v = argv[++i];
+      if (v === undefined) return { ok: false, error: "--style requires a value (friendly|adversarial)" };
+      if (!VALID_STYLES.has(v)) {
+        return { ok: false, error: `--style value must be one of friendly, adversarial — got: ${JSON.stringify(v)}` };
+      }
+      out.style = v;
     } else if (a.startsWith("--")) {
-      return { ok: false, error: `unknown flag: ${a}. Supported: --scope, --base, --model, --session-key, --reset, --no-session.` };
+      return { ok: false, error: `unknown flag: ${a}. Supported: --scope, --base, --model, --session-key, --reset, --no-session, --style.` };
     } else if (a.length > 0) {
       return { ok: false, error: `unexpected positional argument: ${a}. The review subcommand only accepts flag-style arguments.` };
     }
@@ -427,6 +435,7 @@ async function runReview(rawArgs) {
     diff: diff.value,
     scope: resolved.value.scope,
     base: resolved.value.base,
+    style: args.style,
   });
 
   const projectDir = process.env.CLAUDE_PROJECT_DIR ?? cwd;
@@ -437,7 +446,9 @@ async function runReview(rawArgs) {
     binary: cli.binary,
     cwd,
     projectDir,
-    role: "review",
+    // Adversarial style gets its own session-continuity tuple — distinct
+    // session history from friendly review under the same plan/branch + model.
+    role: args.style === "adversarial" ? "review-adversarial" : "review",
     model: args.model,
     prompt,
     opencodeArgs,

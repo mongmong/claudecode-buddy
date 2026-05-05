@@ -19,6 +19,53 @@ function setupRepo(dir) {
   git(dir, "commit", "--allow-empty", "-m", "init", "-q");
 }
 
+test("review --style adversarial accepted by parser", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    setupRepo(dir);
+    writeFileSync(join(dir, "x.txt"), "change\n");
+    const result = await runCompanion(
+      ["review", "--scope", "working-tree", "--style", "adversarial"],
+      { OPENCODE_BIN: SUCCESS_BIN, OPENCODE_REPO_ROOT: dir },
+    );
+    assert.equal(result.code, 0, `stderr: ${result.stderr}`);
+    assert.match(result.stdout, /verdict/i);
+  } finally {
+    cleanup();
+  }
+});
+
+test("review --style friendly is the default + idempotent (same as no flag)", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    setupRepo(dir);
+    writeFileSync(join(dir, "x.txt"), "change\n");
+    const result = await runCompanion(
+      ["review", "--scope", "working-tree", "--style", "friendly"],
+      { OPENCODE_BIN: SUCCESS_BIN, OPENCODE_REPO_ROOT: dir },
+    );
+    assert.equal(result.code, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("review --style with invalid value rejected with exit 2", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    setupRepo(dir);
+    writeFileSync(join(dir, "x.txt"), "change\n");
+    const result = await runCompanion(
+      ["review", "--style", "ninja"],
+      { OPENCODE_BIN: SUCCESS_BIN, OPENCODE_REPO_ROOT: dir },
+    );
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--style.*friendly|adversarial/i);
+  } finally {
+    cleanup();
+  }
+});
+
 test("review with mocked opencode prints the assistant message and verdict line (multi-arg form)", async () => {
   const { dir, cleanup } = makeTempRepo();
   try {
