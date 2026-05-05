@@ -356,4 +356,51 @@ Both round-2 fixes verified: stale "Commit Phase 4 → Phase 3" updated; test fi
 
 ## Post-execution report
 
-(Filled in after Step 5 (Review) lands and before Step 6 (Ship).)
+**Date:** 2026-05-04
+**Branch:** `feature/plan-004-github-installable`
+**Author:** Claude (Opus 4.7, 1M context)
+
+### What was implemented
+
+All 3 phases shipped:
+
+| Phase | Commit | Component |
+|---|---|---|
+| 0 | `5e2046d` | plan(004) with both review verdicts embedded + version-sync test scaffold |
+| 1 | `96de84f` | top-level `.claude-plugin/marketplace.json` |
+| 2 | `c89c000` | retire install scripts + README rewrite (atomic, per round-1 review) |
+| 3 | this commit | D-012 + CHANGELOG distribution-change note + post-execution report |
+
+### Test counts
+
+- Plan 003 baseline: 236 tests (228 pass + 3 e2e skipped + 5 plan-003 fixes).
+- Plan 004 adds: 1 (`tests/marketplace-version-sync.test.mjs`).
+- v0.4.0 (post-plan-004): **237 tests**, 234 pass, 3 e2e skipped.
+
+The version-sync test was a no-op until Phase 1 landed `marketplace.json`; from Phase 1 onward it actively asserts `plugins[*].version` (`0.4.0`) matches `plugins/opencode/.claude-plugin/plugin.json:version` (`0.4.0`) and will fail CI on any future drift.
+
+### Deviations from the plan
+
+- **None of substance.** Phase 2's atomic merge of script-deletion + README rewrite was correctly anticipated by both reviewers in round 1; the plan was revised before implementation rather than during.
+- **Workspace-level README chosen as the canonical install entry point** rather than just updating the plugin's README. The plan's Phase 2 said "maybe-modify top-level README.md if it exists; check first" — it existed (one line); promoting it to the user-facing install doc reads better than duplicating the install snippets in every plugin's README. The plugin README now has a brief "see workspace README" pointer.
+
+### Operator validation results
+
+**Filesystem-source install (pre-merge, on this branch)** — *to be filled in by user before merging*. Expected: edit `~/.claude/settings.json` to add `extraKnownMarketplaces["claudecode-buddy"] = {source: {source: "filesystem", path: "/home/chris/workshop/claudecode-buddy"}}` plus `enabledPlugins["opencode@claudecode-buddy"] = true`; restart Claude Code; verify all `/opencode:*` slash commands appear.
+
+**GitHub-source install (post-merge, after this PR lands on main)** — *deferred to post-merge per plan's Phase 1 Step 4*. Expected: `/plugin marketplace add mongmong/claudecode-buddy` + `/plugin install opencode@claudecode-buddy`; restart Claude Code; verify all slash commands appear. The marketplace.json is fetched from main HEAD; this is also what fixes the user-reported "no `/opencode:` commands after restart" bug.
+
+### Known limitations (also in CHANGELOG + README)
+
+- **GitHub-source installs track main HEAD.** Without git tags, every install is "the latest"; a stale checkout (without `git pull`) runs old plugin code. Tagged releases / version pinning queued for a future plan based on usage signal.
+- **Two version fields** — `marketplace.json:plugins[*].version` and `plugin.json:version` — must stay in sync. The version-sync test catches drift in CI; a future enhancement could collapse this to a single source of truth (e.g., generate marketplace.json from each plugin's plugin.json at release time).
+
+### Follow-up plans queued
+
+- **Plan 005 — macOS parity + stdin-as-prompt** (formerly plan-004 slot before this plan reclaimed it). macOS support for `pidIsOurSupervisor` (via `ps -o command=`), `--task-file` TOCTOU defense (via `F_GETPATH` fcntl), `--task` stdin-as-prompt to bypass macOS ARG_MAX limits.
+- **Plan 006 — Concurrency hardening with `flock(2)`** (formerly plan-005 slot). Replaces best-effort CAS in `lib/jobs.mjs:updateJob` and the v0.3.0 mkdir-EEXIST session lock with proper at-most-one-holder primitives.
+- **Plan 007+ — Session continuity polish.** `/opencode:sessions` list/clear, `--fork` flag, auto-prune of stale `.session-id` files.
+
+### User action required
+
+After this PR merges to main, follow the workspace [`README.md`](../../README.md#install) to register the marketplace and install the opencode plugin via Claude Code. If you previously ran `bash scripts/install-local.sh`, see the README's "Migrating from a previous local install" section to clean up the stale `~/.claude/plugins/marketplaces/claudecode-buddy-local/` symlinks first.

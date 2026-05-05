@@ -6,6 +6,10 @@ All notable changes to the opencode plugin are documented here.
 
 Implemented per `docs/plans/003-review-experience.md`. Plan converged after 5 rounds of Codex review + 5 rounds of opencode/deepseek-v4-pro review. Both reviewers approved at round 5.
 
+### Distribution change (mid-release infrastructure, plan 004)
+
+Mid-release, the workspace's plugin distribution mechanism was reworked. `.claude-plugin/marketplace.json` was added at the repo root; `scripts/install-local.sh` and `scripts/uninstall-local.sh` were deleted. Plugin behavior unchanged from v0.4.0; this is purely a packaging fix. See [`docs/architecture/decisions.md` → D-012](../../docs/architecture/decisions.md) for the rationale and the workspace [`README.md`](../../README.md#install) for the new install instructions. Users who previously ran `bash scripts/install-local.sh` should follow the README's "Migrating from a previous local install" section to clean up the stale `~/.claude/plugins/marketplaces/claudecode-buddy-local/` symlinks.
+
 ### Added
 - `--style <friendly|adversarial>` flag on `/opencode:review`. Default `friendly` (current v0.3.0 behavior). `--style adversarial` prepends the adversarial prompt template (`prompts/adversarial-review.md`) and routes session continuity through `role: review-adversarial` (distinct tuple from `review`). Backwards-compatible — no migration needed for existing usage.
 - Opt-in Stop-hook review gate. When enabled (`/opencode:gate on`), every Claude Code `Stop` event runs a review of the working-tree state + the assistant's last message via `dispatchOpencode`; `needs-attention` verdicts block Claude's stop with `{decision:"block", reason:...}`. Smart-skips read-only turns (no git changes) AND turns where the only changes are the dispatcher's own session-id writes under `.claudecode-buddy/`. Fails open on review-system errors.
