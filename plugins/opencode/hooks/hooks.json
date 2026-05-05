@@ -1,5 +1,5 @@
 {
-  "description": "Session-lifecycle hooks for opencode background-job orphan detection.",
+  "description": "Session-lifecycle hooks (SessionStart/SessionEnd) + opt-in Stop-hook review gate.",
   "hooks": {
     "SessionStart": [
       {
@@ -19,6 +19,17 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end.mjs\"",
             "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/stop-review-gate-hook.mjs\"",
+            "timeout": 900
           }
         ]
       }

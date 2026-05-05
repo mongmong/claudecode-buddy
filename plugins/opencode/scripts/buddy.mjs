@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { detectOpencode } from "./lib/cli-detection.mjs";
 import { detectConfig, defaultConfigPath } from "./lib/config-detection.mjs";
+import { loadConfig, updateConfig } from "./lib/config.mjs";
 import { resolveScope, getDiff } from "./lib/scope.mjs";
 import { buildReviewPrompt } from "./lib/prompt.mjs";
 import { invokeOpencode, invokeOpencodeRaw } from "./lib/invoke.mjs";
@@ -24,10 +25,11 @@ import { listModels } from "./lib/list-models.mjs";
 import { createJob, updateJob, listJobs, loadJob, jobsDir, jobPath, JOB_ID_RE } from "./lib/jobs.mjs";
 
 const VALID_SCOPES = new Set(["auto", "working-tree", "branch"]);
+const VALID_STYLES = new Set(["friendly", "adversarial"]);
 
 function parseReviewArgs(rawArgs) {
   const argv = rawArgs.flatMap((a) => splitArgs(a));
-  const out = { scope: "auto", base: "main", model: null, sessionKey: null, reset: false, noSession: false };
+  const out = { scope: "auto", base: "main", model: null, sessionKey: null, reset: false, noSession: false, style: "friendly" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--scope") {
@@ -53,8 +55,15 @@ function parseReviewArgs(rawArgs) {
       out.reset = true;
     } else if (a === "--no-session") {
       out.noSession = true;
+    } else if (a === "--style") {
+      const v = argv[++i];
+      if (v === undefined) return { ok: false, error: "--style requires a value (friendly|adversarial)" };
+      if (!VALID_STYLES.has(v)) {
+        return { ok: false, error: `--style value must be one of friendly, adversarial — got: ${JSON.stringify(v)}` };
+      }
+      out.style = v;
     } else if (a.startsWith("--")) {
-      return { ok: false, error: `unknown flag: ${a}. Supported: --scope, --base, --model, --session-key, --reset, --no-session.` };
+      return { ok: false, error: `unknown flag: ${a}. Supported: --scope, --base, --model, --session-key, --reset, --no-session, --style.` };
     } else if (a.length > 0) {
       return { ok: false, error: `unexpected positional argument: ${a}. The review subcommand only accepts flag-style arguments.` };
     }
@@ -427,6 +436,7 @@ async function runReview(rawArgs) {
     diff: diff.value,
     scope: resolved.value.scope,
     base: resolved.value.base,
+    style: args.style,
   });
 
   const projectDir = process.env.CLAUDE_PROJECT_DIR ?? cwd;
@@ -437,7 +447,9 @@ async function runReview(rawArgs) {
     binary: cli.binary,
     cwd,
     projectDir,
-    role: "review",
+    // Adversarial style gets its own session-continuity tuple — distinct
+    // session history from friendly review under the same plan/branch + model.
+    role: args.style === "adversarial" ? "review-adversarial" : "review",
     model: args.model,
     prompt,
     opencodeArgs,
@@ -874,6 +886,45 @@ function runCancel(rawArgs) {
   process.exit(0);
 }
 
+function runGate(rawArgs) {
+  const argv = rawArgs.flatMap((a) => splitArgs(a));
+  if (argv.length > 1) {
+    process.stderr.write(`gate accepts at most one argument (on|off|status); got: ${argv.join(" ")}\n`);
+    process.exit(2);
+  }
+  const action = (argv[0] ?? "status").toLowerCase();
+  const projectDir = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+
+  if (action === "status") {
+    const cfg = loadConfig(projectDir);
+    if (!cfg.ok) {
+      process.stderr.write(`${cfg.error}\n`);
+      process.exit(1);
+    }
+    process.stdout.write(`Stop-hook review gate: ${cfg.value.stopReviewGate ? "ON" : "OFF"}\n`);
+    process.exit(0);
+  }
+
+  if (action === "on" || action === "off") {
+    const r = updateConfig(projectDir, { stopReviewGate: action === "on" });
+    if (!r.ok) {
+      process.stderr.write(`${r.error}\n`);
+      process.exit(1);
+    }
+    process.stdout.write(`Stop-hook review gate set to ${action.toUpperCase()}.\n`);
+    if (action === "on") {
+      process.stdout.write(
+        `On the next 'Stop' event (Claude finishes a turn), the gate will run a review of the working-tree state ` +
+        `and the assistant's last message. Use '/opencode:gate off' to disable.\n`,
+      );
+    }
+    process.exit(0);
+  }
+
+  process.stderr.write(`unknown gate action: ${action}. Use: on, off, status.\n`);
+  process.exit(2);
+}
+
 const subcommand = process.argv[2];
 const rest = process.argv.slice(3);
 
@@ -902,9 +953,12 @@ switch (subcommand) {
   case "cancel":
     runCancel(rest);
     break;
+  case "gate":
+    runGate(rest);
+    break;
   default:
     process.stderr.write(
-      `Unknown subcommand: ${subcommand ?? "(none)"}.\nUsage: buddy <setup|models|review|prompt|run|status|result|cancel> [args...]\n`,
+      `Unknown subcommand: ${subcommand ?? "(none)"}.\nUsage: buddy <setup|models|review|prompt|run|status|result|cancel|gate> [args...]\n`,
     );
     process.exit(2);
 }

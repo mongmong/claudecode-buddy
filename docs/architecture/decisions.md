@@ -115,6 +115,26 @@ Why mkdir-EEXIST (not flock): mkdir is portable (works on macOS without coreutil
 
 **Known limitation (v0.3.0): no auto-reclamation of stranded locks.** A dispatch that crashes without releasing leaves a stranded lock until manually `rm`'d. The error message on the next acquisition includes the exact `rm -rf <path>` command. Auto-reclamation queued for plan 004 via proper `flock(2)` or `fcntl(F_SETLK)` semantics. Plan 002 rounds 3-6 attempted layered defenses against 3-party stale-reclamation races (rename-based atomic claim → post-rename stat verification → owner-token files with verify-after-write); each layer closed one race window and exposed a subtler one. The simpler design — drop reclamation, document manual recovery — has zero racing surface and ships in v0.3.0.
 
+## D-011 — Stop-hook review gate is opt-in, fails open, smart-skips read-only turns
+
+**Decided in:** plan 003 (`docs/plans/003-review-experience.md`).
+
+The Stop-hook review gate is enabled per workspace via `<project>/.claudecode-buddy/opencode/config.json`'s `stopReviewGate` flag (default `false`). Toggle via `/opencode:gate on|off|status`. When ON, every Claude Code `Stop` event triggers a review of the working-tree state + the assistant's last message via `dispatchOpencode` with `role: "stop-gate"`. Verdict `needs-attention` → emit `{decision: "block", reason}` to Claude Code (forces Claude to address); verdict `approve` → pass through silently.
+
+Three behaviours that diverge from codex's analogous hook:
+
+1. **Smart-skip read-only turns via git state** (not `tool_uses` parsing). Authoritative signal is `git status --porcelain` plus `existsSync(.git)` pre-check. Codex's reference hook reads only `session_id`, `last_assistant_message`, `cwd` — never `tool_uses` — so a `tool_uses`-based heuristic would be unverified. Plus a meta-skip on `.claudecode-buddy/`-only changes (dispatcher self-edits during reviewer-dispatching turns).
+
+2. **Fail open on review-system errors** — if the review invocation fails (binary missing, timeout, trailer parse error), log a warning to stderr and pass through (no `decision: block`). Codex fails closed.
+
+   **Threat model for fail-open:** this is an *advisory development workflow safeguard*, NOT a security control. Its job is to catch the dominant Claude failure mode of "claimed work done but didn't actually verify" — a productivity issue, not an exploitation vector. Failing open preserves user productivity when the review system itself is misconfigured (opencode binary missing, model API outage, log-format change breaking the trailer parser). For genuine security gating (e.g., "block commits that fail license-compliance check"), fail-closed is correct — but plan 003 ships an advisory gate, and a broken advisory gate that strands the user is worse than a missing one. The hook explicitly logs warnings to stderr on every fail-open path so users notice when the gate isn't running.
+
+3. **Opt-in via slash command + config file** — `/opencode:gate on|off|status` wraps the file edit. Codex requires direct config-file editing. The slash command makes the toggle discoverable.
+
+**Workspace-config convention** (also established in this decision): each plugin owns `<project>/.claudecode-buddy/<plugin-name>/config.json` for runtime settings. `lib/config.mjs` provides the standard CRUD primitives (`loadConfig`, `updateConfig`, `DEFAULT_CONFIG`, `configPath`). Atomic `.tmp+rename` writes; partial-patch updates preserve unrelated keys (forward-compat for plans 004+).
+
+**ESM ordering for the hook script** (matches plan-002 supervisor.mjs precedent): static imports of `node:*` built-ins ONLY (cannot fail at module load), register `uncaughtException` + `unhandledRejection` handlers, then `await import(...)` for own modules. Throws during own-module load hit the fail-open handlers.
+
 ---
 
 ## How to add a decision

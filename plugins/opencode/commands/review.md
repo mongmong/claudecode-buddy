@@ -1,6 +1,6 @@
 ---
 description: Run an opencode code review against local git state (foreground only in v1)
-argument-hint: '[--scope auto|working-tree|branch] [--base <ref>] [--model <provider/model>] [--session-key <name>] [--reset] [--no-session]'
+argument-hint: '[--scope auto|working-tree|branch] [--base <ref>] [--model <provider/model>] [--style friendly|adversarial] [--session-key <name>] [--reset] [--no-session]'
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
@@ -60,7 +60,13 @@ Output handling:
 
 Argument handling:
 - Preserve the user's arguments exactly (apart from injecting the model picker's choice).
-- The script accepts `--scope`, `--base`, `--model`, `--session-key`, `--reset`, and `--no-session`. Unknown flags or unexpected positional arguments are rejected with exit 2 and a clear error message — surface that error to the user verbatim.
+- The script accepts `--scope`, `--base`, `--model`, `--style`, `--session-key`, `--reset`, and `--no-session`. Unknown flags or unexpected positional arguments are rejected with exit 2 and a clear error message — surface that error to the user verbatim.
+
+Adversarial review (v0.4.0+):
+
+- Pass `--style adversarial` to use the hostile-reviewer system prompt (looks for ways the code is broken rather than reasons to approve). Default `--style friendly` matches the v0.3.0 behavior — no migration needed for existing usage.
+- Adversarial reviews run under a separate session-continuity tuple (role=`review-adversarial`), so they don't pollute the friendly review's session history.
+- Pair an adversarial reviewer alongside the friendly one in plan-review or code-review pipelines for a stronger consensus.
 
 Session continuity (v0.3.0+):
 - By default, this command **resumes the prior opencode session** scoped to `(plan-or-branch, role=review, model)`. Successive review rounds on the same plan share the reviewer's prior reasoning.
