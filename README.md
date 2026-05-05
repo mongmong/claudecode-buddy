@@ -65,13 +65,31 @@ Restart Claude Code. The plugin reloads from your checkout on every Claude Code 
 
 ### Migrating from a previous local install
 
-Versions before 2026-05-04 shipped a `scripts/install-local.sh` that symlinked the plugin into a synthetic `~/.claude/plugins/marketplaces/claudecode-buddy-local/` directory and auto-generated a marketplace manifest there. That approach has been retired (see `docs/architecture/decisions.md` → D-012). To clean up:
+Earlier versions of this repo (before plan 004) shipped a `scripts/install-local.sh` that symlinked the plugin into a synthetic `~/.claude/plugins/marketplaces/claudecode-buddy-local/` directory and auto-generated a marketplace manifest there. That approach has been retired (see `docs/architecture/decisions.md` → D-012).
 
-```bash
-rm -rf ~/.claude/plugins/marketplaces/claudecode-buddy-local
-```
+If you previously ran `bash scripts/install-local.sh`:
 
-Then follow the install instructions above to register the new `claudecode-buddy` marketplace.
+1. **Remove the stale marketplace directory:**
+
+   ```bash
+   rm -rf ~/.claude/plugins/marketplaces/claudecode-buddy-local
+   ```
+
+2. **If you also manually edited `~/.claude/settings.json` to enable the old `claudecode-buddy-local` marketplace, remove those entries:**
+
+   ```jsonc
+   // Remove these from settings.json if present:
+   "extraKnownMarketplaces": {
+     "claudecode-buddy-local": { ... }   // ← delete this entry
+   },
+   "enabledPlugins": {
+     "opencode@claudecode-buddy-local": true   // ← delete this entry
+   }
+   ```
+
+3. **Register the new `claudecode-buddy` marketplace** following the install instructions above.
+
+4. **Restart Claude Code** to pick up the new registration.
 
 ## Project layout
 

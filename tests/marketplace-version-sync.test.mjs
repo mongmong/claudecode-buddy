@@ -23,8 +23,23 @@ test("marketplace.json plugins[].version matches each plugin's plugin.json versi
     return;
   }
   const marketplace = JSON.parse(readFileSync(marketplacePath, "utf8"));
-  for (const entry of marketplace.plugins ?? []) {
+  // Per code-review feedback (codex round-1 + glm-5.1): assert plugins is a
+  // non-empty array. A marketplace.json that publishes zero plugins is almost
+  // certainly a bug — better to fail loud than silently no-op past the loop.
+  assert.ok(
+    Array.isArray(marketplace.plugins) && marketplace.plugins.length > 0,
+    `${marketplacePath} must declare a non-empty plugins[] array; got: ${JSON.stringify(marketplace.plugins)}`,
+  );
+  for (const entry of marketplace.plugins) {
     const pluginManifestPath = `plugins/${entry.name}/.claude-plugin/plugin.json`;
+    // Per glm-5.1 review: surface a clear error when a marketplace entry
+    // points at a plugin directory that doesn't exist (e.g., manifest stale
+    // after a plugin removal). Default ENOENT message is opaque.
+    assert.ok(
+      existsSync(pluginManifestPath),
+      `marketplace.json lists plugin "${entry.name}" but ${pluginManifestPath} does not exist. ` +
+      `Either restore the plugin, or remove the entry from .claude-plugin/marketplace.json.`,
+    );
     const pluginManifest = JSON.parse(readFileSync(pluginManifestPath, "utf8"));
     assert.equal(
       entry.version,

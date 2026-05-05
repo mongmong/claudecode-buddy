@@ -343,7 +343,67 @@ Both round-2 fixes verified: stale "Commit Phase 4 → Phase 3" updated; test fi
 
 ## Code Review
 
-(Filled in during Step 5 of `docs/development-workflow.md`. Three reviewers per CLAUDE.md.)
+**Date:** 2026-05-04. **Branch:** `feature/plan-004-github-installable`.
+**Reviewers:** `[codex]` (gpt-5.5), `[opencode-deepseek]` (deepseek-v4-flash), `[opencode-glm]` (volcengine-plan/glm-5.1).
+
+### Verdicts
+
+- `[codex]` — **Approved with suggestions** (0 MF + 3 SF + 0 NTH).
+- `[opencode-deepseek]` — **Approved with suggestions** (1 MF + 2 SF + 1 NTH); the MF overlaps with codex SF #1 (severity disagreement, same root cause).
+- `[opencode-glm]` — **Approved with suggestions** (0 MF + 2 SF + 2 NTH).
+
+### Findings
+
+#### [FIXED] Must Fix / Should Fix — Plugin README phasing table mapped v0.5.0 to plan 004 (the plan that's now this PR) `[opencode-deepseek][codex]`
+
+**File:** `plugins/opencode/README.md:30`
+
+After this plan reclaimed plan-004's slot for the GitHub-installable change, the phasing line `v0.5.0 (plan 004) — macOS parity` became wrong. Codex flagged as Should Fix; deepseek escalated to Must Fix because shipping with a wrong version-to-plan mapping confuses downstream readers.
+→ **Resolution:** updated to `v0.5.0 (plan 005)` and `v0.6.0+ (plan 006)` with a parenthetical noting the renumber.
+
+#### [FIXED] Should Fix — `CLAUDE.md:235` references `scripts/install-local.sh` without retirement note `[opencode-deepseek][opencode-glm]`
+
+CLAUDE.md is the active workspace instruction file read by every new coding session; a stale current-tense reference misleads agents.
+→ **Resolution:** appended `(Originally shipped with scripts/install-local.sh for local-symlink installs; that script was retired in plan 004 in favor of a top-level marketplace.json — see D-012.)`
+
+#### [FIXED] Should Fix — Spec `docs/specs/opencode-plugin.md:197, 251` references retired scripts `[opencode-deepseek][opencode-glm]`
+
+Per workspace convention ("A new plan touching an existing spec amends the spec inline"), the spec needed a retirement annotation.
+→ **Resolution:** strikethrough on the file-list table entry; "Local install" subsection wrapped in retirement note + strikethrough body, preserved as historical record.
+
+#### [FIXED] Should Fix — Migration note didn't tell users to remove old `claudecode-buddy-local` settings entries `[codex]`
+
+**File:** `README.md:68`
+
+Users who manually completed the old half-install by adding `claudecode-buddy-local` to `extraKnownMarketplaces` / `enabledPlugins` would be left with stale settings even after `rm -rf` of the directory.
+→ **Resolution:** migration section now explicitly walks through (1) directory removal, (2) settings.json cleanup with example JSON entries to delete, (3) re-register, (4) restart.
+
+#### [FIXED] Should Fix — `tests/marketplace-version-sync.test.mjs` empty-plugins silent pass + opaque ENOENT `[codex][opencode-glm]`
+
+**File:** `tests/marketplace-version-sync.test.mjs`
+
+Two angles flagged independently:
+- `marketplace.plugins ?? []` would silently pass through an empty/missing plugins array — almost certainly a bug we'd want to fail loud on.
+- `readFileSync(pluginManifestPath)` throws an opaque ENOENT if the listed plugin's `plugin.json` is missing (e.g., plugin removed but marketplace.json not updated).
+
+→ **Resolution:** added `assert.ok(Array.isArray && length > 0)` guard before the loop. Inside the loop, added `existsSync(pluginManifestPath)` check with a clear remediation message ("Either restore the plugin, or remove the entry from .claude-plugin/marketplace.json").
+
+#### [FIXED] Nice to Have — Hard date `"2026-05-04"` in migration cutoff would age poorly `[opencode-deepseek]`
+
+**File:** `README.md:68`
+
+→ **Resolution:** rewrote as `"Earlier versions of this repo (before plan 004)"` — version-based, no date drift.
+
+#### [FIXED] Nice to Have — `marketplace.json` description includes version-specific text `[opencode-glm]`
+
+**File:** `.claude-plugin/marketplace.json:13`
+
+The description had `"Adversarial-style review and an opt-in Stop-hook review gate ship in v0.4.0."` — would go stale on every release.
+→ **Resolution:** rewrote to be version-agnostic, pointing readers at the plugin's own README + CHANGELOG for the per-version feature list.
+
+### Verdict
+
+All Must Fix items: **0** (counting the Codex+Deepseek convergence as one issue, escalated by deepseek but flagged by codex). All Should Fix items resolved (`[FIXED]`); both Nice to Have items also resolved. No `[WONTFIX]` deferrals. Test suite: 237 / 234 pass / 3 e2e skipped (unchanged — only the version-sync test got more assertions, all pass).
 
 ---
 
