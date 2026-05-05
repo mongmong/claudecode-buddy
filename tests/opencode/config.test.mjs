@@ -95,6 +95,34 @@ test("updateConfig: atomic (no .tmp leftovers on success)", () => {
   } finally { cleanup(); }
 });
 
+test("loadConfig: invalid stopReviewGate type → falls back to default with warning (codex code review)", () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    const path = configPath(dir);
+    mkdirSync(join(path, ".."), { recursive: true });
+    // String "true" — would have been truthy in `if (cfg.stopReviewGate)`,
+    // enabling the gate when user clearly intended to disable it.
+    writeFileSync(path, JSON.stringify({ stopReviewGate: "true" }));
+    const r = loadConfig(dir);
+    assert.equal(r.ok, true);
+    assert.equal(r.value.stopReviewGate, false,
+      "validator must drop the string and fall back to default false");
+  } finally { cleanup(); }
+});
+
+test("loadConfig: invalid type in unknown key → preserves the value (forward-compat)", () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    const path = configPath(dir);
+    mkdirSync(join(path, ".."), { recursive: true });
+    // futureFlag is not in VALIDATORS → no validation → user value passes through.
+    writeFileSync(path, JSON.stringify({ stopReviewGate: false, futureFlag: "anything" }));
+    const r = loadConfig(dir);
+    assert.equal(r.ok, true);
+    assert.equal(r.value.futureFlag, "anything");
+  } finally { cleanup(); }
+});
+
 test("updateConfig: preserves unrelated keys when patching one", () => {
   const { dir, cleanup } = makeTempRepo();
   try {

@@ -1343,7 +1343,104 @@ Blockers: (1) `resolveWorkspaceRoot` import from non-existent file, (2) `tool_us
 
 ## Code Review
 
-(Filled in during Step 5 of `docs/development-workflow.md`. Three reviewers per CLAUDE.md: Codex, opencode/deepseek-v4-flash, opencode/glm-5.1.)
+**Date:** 2026-05-04. **Branch:** `feature/plan-003-review-experience`.
+**Reviewers (per CLAUDE.md):** `[codex]` (gpt-5.5), `[opencode-deepseek]` (deepseek/deepseek-v4-flash), `[opencode-glm]` (volcengine-plan/glm-5.1). All three ran the full diff in parallel.
+
+### Verdicts
+
+- `[codex]` — **Approved with suggestions** (0 MF + 2 SF + 2 NTH).
+- `[opencode-deepseek]` — **Approved with suggestions** (0 MF + 2 SF + 5 NTH).
+- `[opencode-glm]` — **Approved with suggestions** (0 MF + 3 SF + 3 NTH).
+
+### Findings
+
+#### [FIXED] Should Fix — `stopReviewGate` was not type-validated `[codex]`
+
+**File:** `plugins/opencode/scripts/lib/config.mjs:38`
+
+A manually edited config like `{"stopReviewGate":"false"}` (string instead of boolean) would have been truthy in the hook's `if (!cfg.value.stopReviewGate)` check, enabling the gate instead of opting out. → **Resolution:** added `VALIDATORS = { stopReviewGate: (v) => typeof v === "boolean" }` map. `loadConfig` validates user values per-key; failing values are dropped with a stderr warning and the default (false) wins. New regression tests cover the string-instead-of-boolean case + the forward-compat case (unknown keys preserved).
+
+#### [FIXED] Should Fix — Missing non-git workspace test `[codex][opencode-glm]`
+
+**File:** `tests/opencode/stop-gate.test.mjs`
+
+Both reviewers caught the same gap: `checkActionable`'s `existsSync(.git)` pre-check branch (gate runs without git filter when `.git/` is missing) had no test. → **Resolution:** added test `stop-gate: non-git workspace → gate runs (treated as actionable per D-011)`. Verifies the gate proceeds to `dispatchOpencode` and the approve fixture passes through, AND the smart-skip stderr messages are absent.
+
+#### [FIXED] Should Fix — `loadConfig` TOCTOU between `existsSync` and `readFileSync` `[opencode-glm]`
+
+**File:** `plugins/opencode/scripts/lib/config.mjs:20`
+
+`existsSync` followed by `readFileSync` is technically TOCTOU: file deleted in the gap → ENOENT thrown → caught and reported as ok:false (when semantically it should be ok:true with defaults). Narrow window but the fix is simpler. → **Resolution:** dropped `existsSync`; handle ENOENT inside the `readFileSync` catch (returns defaults); other I/O errors propagate as ok:false.
+
+#### [FIXED] Should Fix — Empty-blockers UX confusing `[opencode-glm]`
+
+**File:** `plugins/opencode/scripts/stop-review-gate-hook.mjs:185`
+
+Trailer schema permits `{"verdict":"needs-attention","blockers":[]}`. The original message `"found ${blockers.length || "open"} concern(s)"` produced `"found open concern(s)"` — "open" reads as a synonym for "unresolved" rather than the count zero. → **Resolution:** rewrote the message to render zero-blockers explicitly: `"flagged the turn as needs-attention (no specific blockers listed)"` vs `"found N concern(s)"` for the populated case.
+
+#### [FIXED] Should Fix — README stale plan-003 references `[opencode-deepseek]`
+
+**File:** `plugins/opencode/README.md:148-153`
+
+The "From v0.2.0 (tracked for plan 003 polish)" subsection still pointed to plan 003 for macOS cancel, TOCTOU, CAS, ARG_MAX. Plan 003 was renumbered to ship adversarial-review + Stop-hook gate; macOS parity is now plan 004 and `flock(2)` is plan 005. → **Resolution:** subsection retitled to "From v0.2.0 (tracked for plan 004/005 polish)" with each item retargeted appropriately.
+
+#### [FIXED] Nice to Have — README smart-skip wording contradicted non-git behavior `[codex]`
+
+**File:** `plugins/opencode/README.md:49-52`
+
+The "Smart-skip behavior (no review runs in these cases)" list included "Non-git workspace... gate runs" — the bullet describes a RUN, not a skip. → **Resolution:** restructured the section into two lists: smart-skip cases (where the review doesn't run) and runs cases (where it does). Non-git workspace explicitly noted as "the gate fires on every actionable Stop with no skip heuristic — opt out via /opencode:gate off if you don't want this overhead."
+
+#### [FIXED] Nice to Have — `/opencode:gate` silently ignored extra args `[codex][opencode-glm]`
+
+**File:** `plugins/opencode/scripts/buddy.mjs:891`
+
+`gate on off` succeeded silently as "on". → **Resolution:** `runGate` now rejects argv.length > 1 with exit 2 and an error message naming the unexpected args. Regression test added.
+
+#### [WONTFIX] Nice to Have — `dispatchOpencode` "no inner timeout" claim `[opencode-deepseek]`
+
+**File:** `plugins/opencode/scripts/stop-review-gate-hook.mjs:163`
+
+Deepseek-v4-flash flagged the "inner dispatcher timeout (5min) fires first" comment as misleading because `dispatchOpencode` itself has no timeout parameter. → **Resolution:** `[WONTFIX]`. GLM independently verified that `invokeOpencodeRaw` (which `dispatchOpencode` calls) has `DEFAULT_TIMEOUT_MS = 5 * 60 * 1000`. The 5-minute inner timeout exists; deepseek's read missed the chain. The comment is accurate.
+
+#### [WONTFIX] Nice to Have — Corrupted config silently consumed `[opencode-deepseek]`
+
+**File:** `plugins/opencode/scripts/lib/config.mjs:31`
+
+When `JSON.parse` fails, the warning goes to stderr and the loader returns DEFAULT_CONFIG. A scripting consumer that only reads stdout might miss the signal. → **Resolution:** `[WONTFIX]`. Trade-off for advisory config — fail-open on a corrupted user-edited file is the right default for `/opencode:gate status`-style read paths. The stderr warning is the canonical signal; a future plan can add `--strict` if needed.
+
+#### [WONTFIX-NTH] Missing tests for prompt-template ENOENT fallback (adversarial + stop-gate) `[opencode-deepseek]`
+
+**Files:** `plugins/opencode/scripts/lib/prompt.mjs:14`, `plugins/opencode/scripts/stop-review-gate-hook.mjs:113`
+
+Both fallback paths are ENOENT-narrow and trivial (one-line `template = INLINE_*`). Adding tests would mock-delete the template files. → **Resolution:** `[WONTFIX]`. The fallback is exercised in production whenever a user runs from a partial install (pre-Phase-5 dev state). Defer; unlikely to regress.
+
+#### [WONTFIX-NTH] Vestigial assertion in stop-gate test `[opencode-deepseek]`
+
+**File:** `tests/opencode/stop-gate.test.mjs:126`
+
+`assert.doesNotMatch(result.stderr, /dispatching opencode reviewers/i)` checks for a message that the dropped soft-skip would have emitted. → **Resolution:** `[WONTFIX]`. Keep as a regression guard in case soft-skip is reintroduced accidentally; the assertion documents what was dropped.
+
+#### [WONTFIX-NTH] Stale `.tmp` cleanup `[opencode-glm]`
+
+**File:** `plugins/opencode/scripts/lib/config.mjs:51`
+
+A crashed write between `writeFileSync(tmp)` and `renameSync(tmp, path)` leaves a stale `.tmp.<pid>.<ts>` file. → **Resolution:** `[WONTFIX]` (matches plan-002's identical jobs.mjs deferral). Files are tiny, dir is gitignored, accumulation is bounded. Can revisit if production usage shows it as a real issue.
+
+#### [WONTFIX-NTH] Meta-skip regex doesn't cover renamed paths `[opencode-glm]`
+
+**File:** `plugins/opencode/scripts/stop-review-gate-hook.mjs:75`
+
+`/^.. \.claudecode-buddy\//` doesn't match git porcelain rename format `R  old -> new`. → **Resolution:** `[WONTFIX]`. `.claudecode-buddy/` is gitignored in production, and renames within it are extremely unlikely (it's runtime state, not user code). Safe-direction edge case.
+
+#### [WONTFIX-NTH] Non-git workspaces fire on every Stop `[opencode-deepseek]`
+
+**File:** `plugins/opencode/scripts/stop-review-gate-hook.mjs:53-54`
+
+Per D-011, non-git workspaces have no skip heuristic. Cost = one opencode invocation per actionable turn. → **Resolution:** `[WONTFIX]`. Documented in README + D-011 with explicit guidance: opt out via `/opencode:gate off` if not wanted. Adding a heuristic for non-git workspaces (e.g., timestamp-based "any file modified recently") is plan 005+ if it surfaces as a pain.
+
+### Verdict
+
+All Must Fix items: **0**. All Should Fix items resolved (`[FIXED]`); 7 Nice to Have items resolved as `[WONTFIX]` with justification. Test suite: 231 → 236 (+5 new regression tests). 233 pass / 3 e2e skipped. Branch ready to push as a PR.
 
 ---
 

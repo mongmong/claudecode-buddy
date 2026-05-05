@@ -48,3 +48,14 @@ test("gate <unknown>: rejected with exit 2", async () => {
     assert.match(result.stderr, /unknown gate action/i);
   } finally { cleanup(); }
 });
+
+test("gate on extra-arg: rejected with exit 2 (catch typos like 'gate on off')", async () => {
+  // Codex + glm code review: extra positional args were silently ignored,
+  // so /opencode:gate on off would silently succeed as 'on'.
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    const result = await runCompanion(["gate", "on", "off"], { CLAUDE_PROJECT_DIR: dir });
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /at most one argument/i);
+  } finally { cleanup(); }
+});

@@ -49,8 +49,11 @@ When ON: every actionable turn (where the working tree has changes) triggers a r
 **Smart-skip behavior** (no review runs in these cases):
 - Working tree is clean — `git status --porcelain` returns empty (read-only conversation turns).
 - Only changes are under `.claudecode-buddy/` — the dispatcher's own session-id writes during plan/code review work (avoids reviewing the reviewer's session state).
-- Non-git workspace where `.git/` is missing — gate runs without git-state filter (lets the reviewer use Read/Glob/Grep).
 - Git binary missing or wedged (`.git/index.lock` contention, etc.) — skip with stderr log; don't run a review against broken git.
+
+**Cases where the gate runs:**
+- Working tree has changes outside `.claudecode-buddy/` — the dominant case.
+- Non-git workspace where `.git/` is missing — the gate runs WITHOUT a git-state filter (the reviewer falls back to Read/Glob/Grep tools to inspect the file system). Note: in non-git workspaces, the gate fires on every actionable Stop with no skip heuristic — opt out via `/opencode:gate off` if you don't want this overhead.
 
 **Fail-open semantics:** if the review system itself errors (binary missing, model API down, trailer parse failure), the hook logs a warning to stderr and lets Claude proceed. Better to occasionally let through a bad turn than to permanently strand the user when the review system breaks.
 
@@ -142,10 +145,10 @@ Hooks (`SessionStart`, `SessionEnd`) detect orphaned jobs across session boundar
 - **macOS case-insensitive realpath comparison** in `captureLatestSessionForCwd` is best-effort. Pathological mixed-case symlink chains are out of scope for v0.3.0.
 - **Supervisor module-load gap.** Microsecond window between `spawn()` returning and the top-of-file `uncaughtException` handler registering — a thrown ESM import in that window would strand the lock. Static-imports-of-built-ins-only minimises this, but documented for transparency.
 
-### From v0.2.0 (tracked for plan 003 polish)
+### From v0.2.0 (tracked for plan 004/005 polish)
 
-- **macOS cancel** uses best-effort PID match (no `/proc/<pid>/cmdline`). If pid is recycled in the SIGKILL grace window, an unrelated process could be hit. The `pidIsOurSupervisor` Linux check verifies via cmdline; macOS support via `ps -o command=` is tracked for plan 003. The cancel command emits a `WARNING` line on non-Linux to surface this trade-off.
-- **`--task-file` TOCTOU defense is Linux-only** (uses `/proc/self/fd/<N>` for fd-bound path resolution). macOS support deferred to plan 003.
-- **CAS in `updateJob` is best-effort, not truly atomic** — read-check-write window is microseconds; under truly concurrent writers (supervisor close vs SessionEnd vs cancel), last-write-wins. Worst case: a misleading status (e.g., `session-ended` on a job that completed); recoverable via `<id>.events`. True flock serialization is plan 003 work.
-- **ARG_MAX limit** for `--task` as positional CLI arg (>2MB on Linux; >256KB on macOS). Use `--task-file` for very long tasks. Stdin-as-prompt support tracked for plan 003.
+- **macOS cancel** uses best-effort PID match (no `/proc/<pid>/cmdline`). If pid is recycled in the SIGKILL grace window, an unrelated process could be hit. The `pidIsOurSupervisor` Linux check verifies via cmdline; macOS support via `ps -o command=` is tracked for plan 004. The cancel command emits a `WARNING` line on non-Linux to surface this trade-off.
+- **`--task-file` TOCTOU defense is Linux-only** (uses `/proc/self/fd/<N>` for fd-bound path resolution). macOS support deferred to plan 004.
+- **CAS in `updateJob` is best-effort, not truly atomic** — read-check-write window is microseconds; under truly concurrent writers (supervisor close vs SessionEnd vs cancel), last-write-wins. Worst case: a misleading status (e.g., `session-ended` on a job that completed); recoverable via `<id>.events`. True flock serialization is plan 005 work.
+- **ARG_MAX limit** for `--task` as positional CLI arg (>2MB on Linux; >256KB on macOS). Use `--task-file` for very long tasks. Stdin-as-prompt support tracked for plan 004.
 - **Single-pass trailer parsing** — `/opencode:review` does not retry on malformed JSON trailers. Verdict becomes `needs-attention (parse error)` immediately.

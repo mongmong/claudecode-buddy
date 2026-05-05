@@ -163,6 +163,55 @@ test("stop-gate: review invocation fails → fail OPEN (no block)", async () => 
   } finally { cleanup(); }
 });
 
+test("stop-gate: non-git workspace → gate runs (treated as actionable per D-011)", async () => {
+  // Missing test flagged by codex + glm code review. Verifies the
+  // existsSync(.git) pre-check branch where the gate runs WITHOUT a
+  // git-state filter (the reviewer falls back to filesystem inspection).
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    // No setupRepo() — dir has no .git/.
+    updateConfig(dir, { stopReviewGate: true });
+    writeFileSync(join(dir, "code.js"), "// some code\n");
+    const result = await runHook({
+      cwd: dir,
+      session_id: "test",
+      last_assistant_message: "Wrote code.js.",
+    }, { OPENCODE_BIN: REVIEW_OK_BIN });
+    // Gate runs (not skipped) → review fixture emits approve → no block.
+    assert.equal(result.code, 0);
+    assert.equal(result.stdout, "", "approve fixture in non-git workspace → no block");
+    // The skip messages (no .git, clean tree, meta-skip) must NOT appear.
+    assert.doesNotMatch(result.stderr, /skipping gate/i,
+      "non-git workspace should NOT trigger any smart-skip path");
+  } finally { cleanup(); }
+});
+
+test("stop-gate: invalid stopReviewGate type in config → falls back to default OFF", async () => {
+  // Codex code review: manually-edited '{"stopReviewGate":"false"}' (string)
+  // would have been truthy and enabled the gate without type validation.
+  // Verify per-key validator drops the bad value and falls back to default.
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    setupRepo(dir);
+    gitignoreBuddyDir(dir);
+    // Write a bogus config directly: stopReviewGate as a STRING, not boolean.
+    const cfgDir = join(dir, ".claudecode-buddy", "opencode");
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(join(cfgDir, "config.json"), JSON.stringify({ stopReviewGate: "true" }));
+    const result = await runHook({
+      cwd: dir,
+      session_id: "test",
+      last_assistant_message: "Done.",
+    });
+    // Validator rejects the string, falls back to default false → gate is OFF
+    // → hook returns silently (no review run).
+    assert.equal(result.code, 0);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /invalid type for "stopReviewGate"/i,
+      "validator must warn about the type mismatch");
+  } finally { cleanup(); }
+});
+
 test("stop-gate: trailer-parse failure → fail OPEN", async () => {
   const { dir, cleanup } = makeTempRepo();
   try {

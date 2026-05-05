@@ -888,6 +888,10 @@ function runCancel(rawArgs) {
 
 function runGate(rawArgs) {
   const argv = rawArgs.flatMap((a) => splitArgs(a));
+  if (argv.length > 1) {
+    process.stderr.write(`gate accepts at most one argument (on|off|status); got: ${argv.join(" ")}\n`);
+    process.exit(2);
+  }
   const action = (argv[0] ?? "status").toLowerCase();
   const projectDir = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
 

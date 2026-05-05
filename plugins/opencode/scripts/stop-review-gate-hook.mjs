@@ -181,10 +181,14 @@ async function main() {
   if (trailer.value.verdict === "approve") process.exit(0);
 
   // verdict === "needs-attention" → block Claude's stop with the findings.
+  // Trailer schema permits an empty blockers[] array even when the verdict
+  // is needs-attention (model said "needs attention but didn't list specifics").
+  // Render the count explicitly so the message reads cleanly in both cases.
   const blockers = (trailer.value.blockers ?? []).slice(0, 3);
-  const reason = `Stop-hook review gate found ${blockers.length || "open"} concern(s):\n` +
-    blockers.map((b) => `- ${b}`).join("\n") +
-    `\n\nFull review:\n${result.text}`;
+  const summary = blockers.length > 0
+    ? `Stop-hook review gate found ${blockers.length} concern(s):\n` + blockers.map((b) => `- ${b}`).join("\n")
+    : `Stop-hook review gate flagged the turn as needs-attention (no specific blockers listed):`;
+  const reason = `${summary}\n\nFull review:\n${result.text}`;
   emitBlock(reason);
 }
 
