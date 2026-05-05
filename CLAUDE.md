@@ -4,9 +4,10 @@ This workspace builds Claude Code plugins. The first plugin is `opencode` — a 
 
 ## CRITICAL RULES (never skip)
 
-- **Always create a feature branch** before implementation. Never commit directly to main. Use `git checkout -b feature/plan-NNN-description`.
-- **Always dispatch Codex AND opencode plan review before any implementation.** After saving a plan to `docs/plans/`, dispatch `codex:codex-rescue` (Codex on gpt-5.5) AND run an opencode review pinned to model `deepseek/deepseek-v4-pro` (after plan 000 ships: dispatch the `opencode:opencode-review` subagent via the `Agent` tool with a focused review prompt and `--model deepseek/deepseek-v4-pro`; before plan 000 ships: `opencode run --model deepseek/deepseek-v4-pro --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool). **Do NOT begin implementation until Claude, Codex, AND opencode agree** on the plan. If either reviewer flags blockers, revise the plan and re-dispatch BOTH reviews on the revised plan (so both verdicts apply to the final version). Iterate until all three concur. Capture both verdicts in the plan's `## Codex review summary` and `## Opencode review summary` sections.
-- **Always code review** before creating a PR. Run THREE independent reviews: `/codex:review` (Codex on gpt-5.5), opencode pinned to model `deepseek/deepseek-v4-flash`, and opencode pinned to model `volcengine-plan/glm-5.1`. Write findings (tagged `[codex]`, `[opencode:deepseek-v4-flash]`, `[opencode:glm-5.1]`) to the plan file's `## Code Review` section.
+- **Use Claude Sonnet 4.6 by default; promote to Opus 4.7 for complex work.** Routine coding (new commands, runner tweaks, tests, refactors, doc edits) runs on Sonnet. Reach for Opus 4.7 (1M context) when you hit cross-cutting design, hard debugging, or large-codebase reasoning. Do not delegate code generation to Codex, DeepSeek, GLM, or any other external model — those are review-only. See "Coding Agent" below for the escalation policy.
+- **Always create the feature branch BEFORE drafting the plan.** Use `git checkout -b feature/plan-NNN-description` first. The plan file, review verdicts, and iterative revisions all commit to this branch — never to `main`. (The opencode session-continuity helper keys on `plan-NNN`-style branch names, so `feature/plan-NNN-*` is a precondition for reviewer session reuse.)
+- **Always run the 4-way plan review before any implementation.** After drafting or revising any plan in `docs/plans/`, dispatch ALL four reviewers in parallel (see "Plan review gate" below): Self-review (Opus 4.7), Codex (`codex:codex-rescue` subagent), DeepSeek V4 Pro (`opencode:opencode-review` subagent with `--model deepseek/deepseek-v4-pro`), and GLM 5.1 (`opencode:opencode-review` subagent with `--model volcengine-plan/glm-5.1`). Do NOT begin implementation until all four concur. Capture each verdict in the plan's `## Plan Review` section.
+- **Always run the 4-way code review** before merging a PR. Dispatch all four reviewers in parallel (see "Code Review" below): Self-review (Opus 4.7), Codex (`/codex:review`), DeepSeek V4 Flash (`opencode:opencode-review` subagent with `--model deepseek/deepseek-v4-flash`), and GLM 5.1 (`opencode:opencode-review` subagent with `--model volcengine-plan/glm-5.1`). Tag findings `[self-opus]`, `[codex]`, `[opencode:deepseek-v4-flash]`, `[opencode:glm-5.1]` in the plan's `## Code Review` section.
 - **Always write a post-execution report** in the plan file before shipping.
 - **Always run the full test suite** before pushing. Do not push with failing tests.
 
@@ -92,21 +93,28 @@ Long sentences may break at a clause boundary (`,` `;` `—`) but not mid-clause
 Tables, code blocks, lists, and URLs follow their natural format — semantic line breaks only apply to prose paragraphs.
 This convention produces cleaner `git diff` output (a sentence rewording changes one line, not a re-flowed paragraph) without the manual-rewrap cost of fixed column limits.
 
-### Plan review gate (mandatory)
+### Plan review gate (mandatory — 4-way)
 
-Every plan — new or revised — must pass BOTH a Codex review AND an opencode review before any code is written. This gate is the AI-review portion of `docs/development-workflow.md` Step 2 (steps 7–8); Step 2 also covers the surrounding save / user-approval / commit flow.
+Every plan — new or revised — must pass a 4-way review before any code is written. The four reviewers run **in parallel** (dispatch all simultaneously via multiple Agent / subagent calls in a single message):
 
-1. **Save the plan to `docs/plans/`** (uncommitted is fine — reviewers read from disk).
-2. **Dispatch reviews in parallel:**
-   - `codex:codex-rescue` with the plan path and explicit review questions (blockers, hidden assumptions, scope, ordering, missing risks). Keep the prompt focused — under 500 words, time-bounded.
-   - Dispatch `opencode:opencode-review` via the `Agent` tool with the same questions as a focused review prompt, pinned to model `deepseek/deepseek-v4-pro`. The orchestrator includes `--model deepseek/deepseek-v4-pro` in the bash command the subagent runs (see the subagent doc for the heredoc + `--model` example). (Before plan 000 ships, fall back to `opencode run --model deepseek/deepseek-v4-pro --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool.)
-3. **Capture both verdicts** in the plan file:
-   - `## Codex review summary` — date, blockers, confirmations, resolution for each blocker.
-   - `## Opencode review summary` — date, blockers, confirmations, resolution for each blocker.
-4. **If either reviewer flags blockers, revise the plan** to address them. Re-dispatch BOTH reviews on the revised plan (so both verdicts apply to the final version) and re-embed the updated verdicts. Iterate until BOTH return no blockers AND Claude agrees with each resolution.
-5. **AI review gate satisfied.** Hand off to `docs/development-workflow.md` Step 2 (steps 9–10) to complete: get final user approval, then commit the plan file with both review summaries embedded as the first commit on the feature branch. Only then begin implementation.
+| # | Reviewer | How to dispatch | Model |
+|---|----------|-----------------|-------|
+| 1 | **Self-review (Opus 4.7)** | Claude reads its own plan critically on Opus and lists concerns inline | claude-opus-4-7 |
+| 2 | **Codex** | `codex:codex-rescue` subagent with the plan path + review questions | Codex default |
+| 3 | **DeepSeek V4 Pro** | `opencode:opencode-review` subagent with `--model deepseek/deepseek-v4-pro` | deepseek/deepseek-v4-pro |
+| 4 | **GLM 5.1** | `opencode:opencode-review` subagent with `--model volcengine-plan/glm-5.1` | volcengine-plan/glm-5.1 |
 
-A plan that hasn't passed both reviews is not ready for execution, regardless of how confident Claude is in it. The three-model consensus (Claude + Codex + opencode) catches blind spots no single model can see — and since this workspace's *purpose* is to make opencode-as-reviewer ergonomic from inside Claude Code, eating our own dog food matters.
+Steps:
+
+1. **Create the feature branch FIRST** — `git checkout -b feature/plan-NNN-description` before any plan drafting. Every commit (the plan file, the review verdicts, the iterative revisions) lands on the feature branch, never on `main`. The opencode session-continuity helper keys on `plan-NNN`, so reviewer history scopes correctly when the branch matches `feature/plan-NNN-*`.
+2. **Draft or revise the plan** in `docs/plans/`. Commit it to the feature branch so the reviewers can read the same on-disk file Claude is iterating on.
+3. **Run self-review (Opus 4.7)** — Claude reads the plan with fresh eyes on Opus and records any concerns inline. Self-review ALWAYS runs on Opus, regardless of which tier wrote the plan (see "Coding Agent" → "Self-review always runs on Opus 4.7").
+4. **Dispatch reviewers 2-4 in parallel** — same focused prompt to each (plan path + explicit review questions: blockers, hidden assumptions, scope, ordering, missing risks). Keep each prompt under ~500 words and time-bounded. Use the `Agent` tool with `subagent_type: "codex:codex-rescue"` for Codex and `subagent_type: "opencode:opencode-review"` for the two opencode reviewers — the opencode subagent accepts the model pin in its prompt and forwards it to the underlying `--model` flag.
+5. **Capture all four verdicts** in the plan's `## Plan Review` section. Include the date, the reviewer name, the verdict, the blockers, and the resolution for each blocker. Commit the verdicts to the feature branch as they arrive — don't batch the audit trail.
+6. **If ANY reviewer flags blockers, revise the plan** to address them on the same feature branch. Re-dispatch only the flagging reviewer(s) on the revised plan. Iterate until all four concur.
+7. **Only then** begin implementation on the same branch. The plan file with the 4-way review summary is already committed; the next commits are the implementation.
+
+A plan that hasn't passed all four reviews is not ready for execution, regardless of how confident Claude is in it. The multi-model consensus catches blind spots no single model can see — and since this workspace's *purpose* is to make opencode-as-reviewer ergonomic from inside Claude Code, eating our own dog food matters.
 
 **Session continuity (v0.3.0+, plan 002):** the opencode subagent automatically resumes the prior session for `(plan-or-branch, role, model)` between rounds, so the reviewer remembers what they said in earlier rounds. No invocation change needed — the dispatcher handles it. If a reviewer's session gets confused, pass `--reset` to start fresh on the next round.
 
@@ -115,6 +123,8 @@ A plan that hasn't passed both reviews is not ready for execution, regardless of
 **Stop-hook review gate (v0.4.0+, plan 003, opt-in):** `/opencode:gate on` enables an automatic review on every Claude Code `Stop` event. The gate runs `/opencode:review`-equivalent checks against the working-tree state + the assistant's last message; verdict `needs-attention` blocks Claude's stop with the findings. Smart-skips read-only turns (no git changes) and fails open when the review system itself is broken. `/opencode:gate off` to disable; `/opencode:gate status` to check. Recommended for users who want a safety net but DON'T turn it on for every project — it adds latency and API cost on every actionable turn.
 
 ### Handling hung reviews
+
+> **Scope:** the plugin is the routine review path — `/opencode:review` (interactive) or `Agent({subagent_type: "opencode:opencode-review"})` (programmatic). This section covers raw `opencode run` bash invocations as a **debugging escape hatch** when a plugin-dispatched review hangs and you need live event-stream visibility the plugin doesn't surface. Do NOT use raw bash invocation as the routine review path.
 
 opencode runs occasionally hang (model API unresponsive, rate limits, network issue). Symptoms:
 
@@ -177,8 +187,8 @@ jq -r 'select(.type=="text") | .part.text' /tmp/review.out | tail -c 4000
 
 1. Verify hang by checking the output file size: if no growth for >60s and the opencode log shows no progress, the run is genuinely stuck.
 2. Kill the process (`kill <pid>`).
-3. **Try `--reset` first** (v0.3.0+) — if the issue is a confused reviewer session rather than the model itself, dispatching with `--reset` discards the stored session-id and starts fresh. Often resolves the hang without changing models.
-4. If `--reset` doesn't help, re-dispatch with a different model from the same tier (e.g., substitute `volcengine-plan/glm-5.1` for `deepseek/deepseek-v4-pro` if the latter hangs).
+3. **Try `--reset` first** (v0.3.0+) — if the issue is a confused reviewer session rather than the model itself, re-dispatch the plugin command with `--reset` (e.g., `/opencode:review --reset --model <id>`, or pass `--reset` in the subagent prompt). This discards the stored session-id and starts fresh. Often resolves the hang without changing models.
+4. If `--reset` doesn't help, re-dispatch the plugin command with a different model from the same tier (e.g., substitute `volcengine-plan/glm-5.1` for `deepseek/deepseek-v4-pro` if the latter hangs).
 5. Note the substitution explicitly in the review verdict header so the model used is auditable.
 
 Plan 002 (v0.3.0) shipped session continuity with `--reset` as the recovery primitive. A future plan may add `scripts/dispatch-review.sh` for automated hang detection (file-growth poll) and fallback-model retry.
@@ -187,72 +197,109 @@ Plan 002 (v0.3.0) shipped session continuity with `--reset` as the recovery prim
 
 Follow `docs/development-workflow.md` exactly for every plan (Steps 1–6: Design → Plan → Build → Verify → Review → Ship). Do not skip steps or batch them. Key points:
 - **Design before plan** — explore the problem, brainstorm approaches, align with user
-- **Plan before code** — write and commit plan file (with both review summaries) before any implementation
+- **Plan before code** — write and commit plan file (with all four plan-review verdicts) before any implementation
 - **Build phase by phase** — implement, test, self-review, document, commit each phase separately
 - **Verify before review** — full test suite, cross-phase consistency check
-- **Review before ship** — code review findings (both reviewers) in plan file, all [OPEN] items resolved
+- **Review before ship** — code review findings (all four reviewers) in plan file, all [OPEN] items resolved
 - **Ship cleanly** — post-execution report, update decisions.md if needed, then PR
 
 ## Code Review
 
-Follow `docs/code-review.md` for the review process. Key points:
+Follow `docs/code-review.md` for the review process. Reviews use the same 4-way pattern as plans but with a **flash-tier model for DeepSeek** (code reviews are more frequent and latency-sensitive):
+
+| # | Reviewer | How to dispatch | Model |
+|---|----------|-----------------|-------|
+| 1 | **Self-review (Opus 4.7)** | Claude reads the diff critically on Opus before dispatching | claude-opus-4-7 |
+| 2 | **Codex** | `/codex:review` (interactive) or `codex:codex-rescue` subagent with branch diff + review questions | Codex default |
+| 3 | **DeepSeek V4 Flash** | `opencode:opencode-review` subagent with `--model deepseek/deepseek-v4-flash` | deepseek/deepseek-v4-flash |
+| 4 | **GLM 5.1** | `opencode:opencode-review` subagent with `--model volcengine-plan/glm-5.1` | volcengine-plan/glm-5.1 |
+
+Key points:
+- All four reviewers dispatch **in parallel** (multiple Agent calls in one message) after the self-review pass.
 - Reviews go in the plan file's `## Code Review` section.
 - Reviewers: append findings with `[OPEN]` status and file:line references.
 - Authors: respond inline with `→ Response:` and `[FIXED]`/`[WONTFIX]`.
-- **Run THREE independent code reviews** before creating a PR: `/codex:review` (Codex on gpt-5.5), opencode pinned to `deepseek/deepseek-v4-flash`, and opencode pinned to `volcengine-plan/glm-5.1`. Tag findings `[codex]`, `[opencode:deepseek-v4-flash]`, `[opencode:glm-5.1]` so the source is clear. All `[OPEN]` items from ANY of the three reviewers must be resolved before opening the PR.
-- Opencode invocations: dispatch `opencode:opencode-review` via the `Agent` tool TWICE in parallel (once per opencode model), each with prompt: "Code review the changes on this branch (run `git diff main...HEAD`). Focus on correctness, security, consistency with the reference codex plugin layout, and the rules in CLAUDE.md. Flag issues with file:line references and an [OPEN] tag." The orchestrator passes `--model deepseek/deepseek-v4-flash` for the first dispatch and `--model volcengine-plan/glm-5.1` for the second.
-- Before plan 000 ships, fall back to two parallel `opencode run --model <model> --dangerously-skip-permissions "<same prompt>"` invocations (one per model) from the repo root via the Bash tool.
+- Tag findings `[self-opus]`, `[codex]`, `[opencode:deepseek-v4-flash]`, `[opencode:glm-5.1]` so the source is clear. All `[OPEN]` items from ANY of the four reviewers must be resolved before opening the PR.
+- Opencode invocations: dispatch `opencode:opencode-review` via the `Agent` tool TWICE in parallel (once per opencode model), each with prompt: "Code review the changes on this branch (run `git diff main...HEAD`). Focus on correctness, security, consistency with the reference codex plugin layout, and the rules in CLAUDE.md. Flag issues with file:line references and an [OPEN] tag." The orchestrator passes the appropriate `--model` flag in the bash heredoc the subagent runs (see the subagent doc for the heredoc + `--model` example).
+- If ANY reviewer flags a blocker, fix it before merging. Re-dispatch only the flagging reviewer(s) to confirm the fix.
 
 ## Coding Agent
 
-**Claude is the primary coding agent.** Model selection within Claude follows a two-tier rule:
+This workspace uses a **two-tier Claude coding policy** — Sonnet 4.6 for the bulk of routine work, Opus 4.7 for the genuinely hard parts. The model in use should match the difficulty of the task, not the prestige of the plan.
 
-- **Sonnet — default for general coding tasks.** Routine implementation, straightforward refactors, applying review findings, writing tests against an existing pattern, doc/CHANGELOG updates, file renames, mechanical fixes, and any task where the approach is already settled. Sonnet is faster and cheaper; use it whenever the task is well-scoped.
-- **Opus — reserved for complex coding tasks.** Multi-file architectural changes, ambiguous problem framing, debugging deep failures across subsystems, plan-level work requiring trade-off judgment, novel concurrency / security / supervisor-style logic, or tasks where Sonnet has stalled or produced incorrect results. Switch to Opus when the task genuinely needs the deeper reasoning budget.
+### Claude Sonnet 4.6 — general coding agent (default)
 
-Default to Sonnet; promote to Opus only when complexity warrants it. The user may pin a model with `/model` at any time — respect that override. Use the `superpowers:subagent-driven-development` skill for multi-task plan execution regardless of which Claude model is driving.
+Use Sonnet for the bulk of day-to-day implementation:
+- All test code (smoke tests, runner tests, fixtures, helpers) — pattern-heavy, repetitive, fast feedback loop.
+- New slash commands / subagents / skills following an established pattern.
+- Wiring changes (manifest fields, hook configs, plugin metadata bumps).
+- Refactors with a clear before/after shape.
+- Doc updates, CHANGELOG entries, dependency bumps, copy edits.
+- Small bug fixes where the root cause is already known.
+- Applying review findings.
 
-Codex and opencode are *secondary* agents. Codex remains review-only in this workspace. opencode became write-capable in plan 001 via `/opencode:run` — Claude remains the primary coding agent and opencode is a *secondary* agent for delegated coding work where the user wants a different model's perspective on writing the code. Use `/opencode:run --yolo` (with explicit user consent) for auto-approve, or `/opencode:run` (no `--yolo`) to keep opencode's permission prompts in the loop in interactive contexts.
+### Claude Opus 4.7 — complex coding agent (1M context)
 
-## Codex (GPT-5.5) — Review Only
+Escalate to Opus when:
+- Designing a new architectural pattern or cross-cutting abstraction.
+- Debugging a non-obvious issue with multi-system surface area (race conditions, supervisor lifecycle, hook ordering, cross-process locking).
+- Implementing the first phase of a plan that establishes patterns later phases will follow.
+- Reading a large unfamiliar codebase to plan a refactor.
+- Tasks that genuinely benefit from the 1M context window.
+- Anything where Sonnet has already attempted and gotten stuck.
 
-**Use Codex exclusively for review tasks.** This is mandatory for plan review, but Codex should NOT be used for coding:
+When in doubt, start with Sonnet. Promote to Opus only when the work clearly warrants it — Opus is more expensive, slower, and shouldn't be the reflex choice. Promotion mid-task is fine: if Sonnet hits a wall, hand off to Opus with the conversation context intact. The user may pin a model with `/model` at any time — respect that override. Use the `superpowers:subagent-driven-development` skill for multi-task plan execution regardless of which Claude model is driving.
 
-- **Plan review (BLOCKING — see "Plan review gate" above)** — every plan in `docs/plans/` must pass `codex:codex-rescue` review before any code is written. Implementation on a plan that hasn't been reviewed-and-agreed is a process violation.
-- **Code review** — use `/codex:review` for branch-level review before creating PRs.
-- **Spec review** — dispatch `codex:codex-rescue` to validate design specs in `docs/specs/`.
-- **Implementation review** — dispatch `codex:codex-rescue` to verify implementations match their plan specifications.
+### Self-review always runs on Opus 4.7
 
-Codex provides an independent second-model perspective (GPT-5.5) that catches issues Claude may miss. Codex review is non-optional for plans (alongside opencode); strongly recommended for everything else.
+The **self-review stage** of both gates (plan review #1 and code review #1) ALWAYS runs on Opus 4.7, regardless of which tier wrote the plan or code. Review is judgment-heavy and load-bearing — a routine implementation deserves a careful review, and the cost gap between Sonnet and Opus on a single review pass is dwarfed by the cost of shipping a flaw that the gate should have caught. Switch to Opus before invoking the self-review step.
 
-Do NOT use Codex for implementation, debugging, refactoring, or any coding work. Those belong to Claude (Sonnet for general tasks, Opus for complex ones — see "Coding Agent" above).
+### Both tiers — same rules
 
-## Opencode
+- Do NOT delegate coding tasks to Codex, DeepSeek, or GLM. Those models are review-only (see "External Reviewers" below).
+- Both tiers follow the 4-way review gates for plans and code (with Opus on self-review, see above).
+- Both tiers respect the branch-first rule and the development workflow.
+- opencode itself became write-capable in plan 001 via `/opencode:run` — but it's a *secondary* delegation channel, not a coding agent in the policy sense. Use `/opencode:run --yolo` (with explicit user consent) only for narrowly-scoped delegations where you want a different model's perspective on a specific change. Default coding work stays on Claude (Sonnet by default, Opus for complex tasks).
 
-opencode is being rolled out in this workspace as a third independent code-review and (eventually) coding agent, alongside Claude and Codex. The plugin lives at `plugins/opencode/` and is built up over phased plans:
+## External Reviewers (Review Only)
 
-- **Phase 1 (plan 000, shipped):** read-only review — `/opencode:review`, `/opencode:setup`, `opencode:opencode-review` subagent. Foreground execution. Used by the dual plan-review gate and code-review process.
-- **Phase 2 (plan 001, this plan):** write-capable run + background tasks — `/opencode:run`, `--background` execution, `/opencode:status` / `/opencode:result` / `/opencode:cancel`, `opencode:opencode-run` subagent. (Originally shipped with `scripts/install-local.sh` for local-symlink installs; that script was retired in plan 004 in favor of a top-level marketplace.json — see D-012.)
-- **Phase 3 (plan 002):** adversarial-review + optional Stop-hook review gate.
+Three external review models complement Claude's self-review. None of them implement code — they review only.
+
+### Codex
+- Dispatch: `codex:codex-rescue` subagent (programmatic) or `/codex:review` (interactive code review).
+- Use for: plan reviews, code reviews, spec reviews, post-impl reviews.
+- Prompt style: under 500 words, focused questions (blockers, hidden assumptions, scope, ordering, missing risks), time-bounded.
+
+### DeepSeek (via opencode)
+- Plan reviews: `opencode:opencode-review` subagent with `--model deepseek/deepseek-v4-pro`.
+- Code reviews: `opencode:opencode-review` subagent with `--model deepseek/deepseek-v4-flash` (faster for frequent post-impl passes).
+- Prompt style: same prompt as Codex (plan path + questions, or branch diff + questions). The opencode subagent accepts free-form prompt text forwarded to the model along with the `--model` pin in the bash heredoc.
+
+### GLM 5.1 (via opencode)
+- All reviews: `opencode:opencode-review` subagent with `--model volcengine-plan/glm-5.1`.
+- Prompt style: same as above.
+
+Do NOT use any of these for implementation, debugging, refactoring, or coding. Those belong to Claude Sonnet 4.6 (default) or Opus 4.7 (complex) — see "Coding Agent" above.
+
+### Opencode plugin context
+
+opencode is the third independent code-review (and selectively, write-capable) agent in this workspace, alongside Claude and Codex. The plugin lives at `plugins/opencode/` and was built up over phased plans:
+
+- **v0.1.0 (plan 000):** read-only review — `/opencode:review`, `/opencode:setup`, `opencode:opencode-review` subagent.
+- **v0.2.0 (plan 001):** write-capable run + background tasks — `/opencode:run`, `--background`, `/opencode:status` / `/opencode:result` / `/opencode:cancel`, `opencode:opencode-run` subagent.
+- **v0.3.0 (plan 002):** review session continuity per `(plan-or-branch, role, model)` tuple.
+- **v0.4.0 (plan 003):** `--style adversarial` flag + opt-in Stop-hook review gate.
+- **v0.4.0+ (plan 004):** GitHub-installable marketplace via `.claude-plugin/marketplace.json` (D-012).
 
 opencode runs whichever LLM the user has configured in `~/.config/opencode/opencode.json`. The plugin is model-agnostic — it never embeds a default model. The user's `~/.config/opencode/opencode.json` must define the models referenced in this workspace's review pipeline:
 
-- `deepseek/deepseek-v4-pro` — used by the dual plan-review gate (single opencode reviewer alongside Codex).
-- `deepseek/deepseek-v4-flash` — used by the code-review pipeline (one of two opencode reviewers alongside Codex).
-- `volcengine-plan/glm-5.1` — used by the code-review pipeline (the second opencode reviewer).
+- `deepseek/deepseek-v4-pro` — plan-review gate (one of three external reviewers alongside Codex and GLM).
+- `deepseek/deepseek-v4-flash` — code-review pipeline (one of three external reviewers).
+- `volcengine-plan/glm-5.1` — both pipelines (the GLM 5.1 reviewer).
 
-The pinned models give Plan reviews and Code reviews each a deliberate, reproducible model mix; pinning keeps the dual/triple-review consensus stable across reviews instead of drifting whenever the user's default model changes.
+The pinned models give plan reviews and code reviews each a deliberate, reproducible model mix; pinning keeps the 4-way review consensus stable across reviews instead of drifting whenever the user's default model changes.
 
-Until plan 000 ships, opencode is invoked via the CLI: `opencode run --dangerously-skip-permissions "<focused review prompt>"` from the repo root via the Bash tool. After plan 000 ships, prefer `/opencode:review` for interactive use and `Agent({subagent_type: "opencode:opencode-review"})` for programmatic dispatch (e.g., the dual plan-review gate).
-
-Until plan 001 ships, opencode is review-only by capability — do not delegate coding tasks to it. After plan 001 ships, opencode-run can take write-capable tasks; Claude remains the *primary* coding agent (Sonnet by default, Opus for complex tasks — see "Coding Agent" above) and opencode is a *secondary* agent for selective delegation.
-
-- **Plan review (BLOCKING — see "Plan review gate" above)** — every plan must pass an opencode review *in addition to* the Codex review before any code is written. Capture the verdict in the plan's `## Opencode review summary` section.
-- **Code review** — run opencode alongside `/codex:review` for branch-level review before PRs.
-- **Spec review** — run opencode to validate design specs in `docs/specs/`, alongside the Codex spec review.
-- **Implementation review** — run opencode to verify implementations match their plan specifications.
-
-The three-model consensus (Claude + Codex + opencode) is the project standard for plan review. It catches blind spots that even two models can share.
+**Dispatch always goes through the plugin**, never raw CLI. Use `/opencode:review` for interactive review and `Agent({subagent_type: "opencode:opencode-review", prompt: "..."})` for programmatic dispatch (e.g., the 4-way plan-review gate). The subagent forwards `--model <id>` to the underlying `opencode run` invocation. (Raw `opencode run --model X --dangerously-skip-permissions "..."` bash invocations are reserved for low-level debugging of stuck reviews — see "Handling hung reviews" below — not for the routine review path.)
 
 ## Multi-Agent Coordination
 
