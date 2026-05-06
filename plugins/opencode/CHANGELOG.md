@@ -8,8 +8,8 @@ All notable changes to the opencode plugin are documented here.
 - `--variant <level>` flag on `/opencode:review`, `/opencode:run`, the `prompt` subcommand, and both subagents (`opencode:opencode-review`, `opencode:opencode-run`). Forwards opencode's `--variant` argument verbatim to the underlying provider — opencode documents `high`, `max`, and `minimal` as common values, but the exact set is provider-specific. The plugin does not validate the value (provider decides what's accepted).
 - `OPENCODE_VARIANT` env var fallback for the `prompt` subcommand (mirrors the existing `OPENCODE_MODEL` pattern). The explicit `--variant` flag wins over the env var.
 - **Automatic opencode binary discovery.** When `OPENCODE_BIN` is unset and `opencode` is not on `PATH`, the plugin now scans a documented list of common install locations (`~/.opencode/bin/opencode` — the official installer's drop point — `~/.local/bin/`, `~/.bun/bin/`, `~/.npm-global/bin/`, `~/.npm/bin/`, `/opt/homebrew/bin/`, `/usr/local/bin/`, `/usr/bin/`) and uses the first existing + executable hit. Resolution order: `OPENCODE_BIN` → `PATH` → well-known scan. The "not installed" guidance now lists every location it checked.
-- 9 new tests in `tests/opencode/variant.test.mjs` covering --variant forwarding, default-omission, missing-value rejection, duplicate-flag rejection, and env-var fallback / precedence.
-- 9 new tests in `tests/opencode/cli-detection.test.mjs` covering scan-path fallback, scan-order precedence, OPENCODE_BIN-wins-over-scan, PATH-wins-over-scan, non-executable rejection, directory-not-file rejection, and guidance-text content.
+- 10 new tests in `tests/opencode/variant.test.mjs` covering --variant forwarding (review / run-foreground / run-background-via-supervisor / prompt), default-omission, missing-value rejection, duplicate-flag rejection, and env-var fallback / precedence.
+- 10 new tests in `tests/opencode/cli-detection.test.mjs` (file grew from 3 → 13 tests) covering scan-path fallback, scan-order precedence, OPENCODE_BIN-wins-over-scan, PATH-wins-over-scan (with hermetic sandbox + a defense-in-depth version-string variant), non-executable rejection, directory-not-file rejection, and guidance-text content.
 - New fixture `tests/opencode/fixtures/mock-opencode-record-args.mjs` — records `process.argv` to `$OPENCODE_RECORD_ARGS_PATH` so tests can assert exactly what's forwarded to the spawned opencode binary.
 
 ### Changed
@@ -17,11 +17,12 @@ All notable changes to the opencode plugin are documented here.
 - `runReview`, `runRun` (foreground), `runRunBackground`, and `invokeOpencode` push `--variant <value>` after `--model` in the spawned argv when set.
 - `--variant` does NOT change the session-continuity tuple (key still `(plan-or-branch, role, model)`), so a single session can mix variant levels across rounds.
 - `lib/cli-detection.mjs` exports a frozen `WELL_KNOWN_INSTALL_PATHS` constant for tests + downstream consumers that want to inspect the canonical scan order without hardcoding it.
+- **Review timeout coordinated bump (USER-FACING).** The foreground review/run/prompt timeout in `lib/invoke.mjs:DEFAULT_TIMEOUT_MS` increased from 5 minutes to **20 minutes** — slower providers (deepseek-v4-pro, glm-5.1) routinely run 6-12 minutes on plan/code reviews of meaningful diffs and the previous 5-min cap was too tight in practice. The Stop-hook gate's outer ceiling (`stop-review-gate-hook.mjs:HOOK_TIMEOUT_MS`) moved 15 → 25 minutes, and the corresponding `hooks/hooks.json` Stop-event timeout moved 900s → 1500s, so the inner cap fires first with 5-min headroom over the outer. **Net effect for users with the Stop-hook gate enabled:** Claude Code's `Stop` event can block for up to 25 minutes (was 15) when a review is running. Disable via `/opencode:gate off` if that's not acceptable for your workflow.
 
 ### Test counts
 - v0.4.0 baseline: 234 tests (231 pass + 3 e2e skipped).
-- v0.5.0 adds: 9 variant tests + 9 cli-detection tests.
-- v0.5.0: **252 tests pass**, 3 e2e skipped, 0 fail.
+- v0.5.0 adds: 10 variant tests + 10 cli-detection tests (net; 3 → 13 in cli-detection.test.mjs).
+- v0.5.0: **254 tests pass** out of 257 total, 3 e2e skipped, 0 fail.
 
 ## 0.4.0 — Adversarial-style review + opt-in Stop-hook gate
 
