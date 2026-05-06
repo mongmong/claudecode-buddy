@@ -124,7 +124,10 @@ Dispatched against the post-fix branch (HEAD `fb5f83b`) via the bash escape hatc
 
 **Verdict pre-fix: needs-attention.** All 3 `[OPEN]` items are doc-level; no correctness blockers. Re-dispatch on the post-doc-fix commit expected to flip the verdict to approve — captured below if/when it runs.
 
-**Re-dispatch verdict (post-doc-fix):** TBD — re-running GLM after this commit lands to confirm `[OPEN]` resolution.
+**Re-dispatch verdict (post-doc-fix, HEAD `eecf826`):** ✅ **approve.** GLM confirmed all 3 `[OPEN]` items as `[RESOLVED]`:
+1. CHANGELOG test counts stale → resolved (10+10, 254 / 257).
+2. CHANGELOG missing timeout-bump entry → resolved (full "Review timeout coordinated bump (USER-FACING)" entry under `### Changed`).
+3. 4-way code review TBD slots → resolved (all four reviewer slots filled).
 
 ## Post-execution report
 
@@ -132,7 +135,11 @@ Dispatched against the post-fix branch (HEAD `fb5f83b`) via the bash escape hatc
 |---|---|---|
 | `--variant` flag implementation + tests + docs | ✅ shipped | `1e6ea25` |
 | Auto-discovery + tests + docs | ✅ shipped | `dbc3522` |
-| Plan file (this document) + 4-way code review | 🟡 in progress | — |
+| Plan file (this document) | ✅ shipped | `4512774` |
+| Review timeout coordinated bump (5m→20m inner, 15m→25m outer) | ✅ shipped | `466aa0a` |
+| Codex round-1 fixes (4 minor items) | ✅ shipped | `fb5f83b` |
+| DeepSeek + GLM doc-drift fixes (CHANGELOG counts + timeout entry + plan ## Code Review verdicts) | ✅ shipped | `eecf826` |
+| 4-way code review (all four ✅ approve after re-dispatch) | ✅ complete | this commit |
 
 ### What changed (file-level)
 
