@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-const DEFAULT_TIMEOUT_MS = 300000; // 5 minutes
+const DEFAULT_TIMEOUT_MS = 1_200_000; // 20 minutes — long-running plan/code reviews on slower providers (deepseek-v4-pro, glm-5.1) routinely run 6-12 min; 5min was too tight in practice
 const KILL_GRACE_MS = 2000;
 
 function parseEvents(stdout) {
@@ -98,11 +98,13 @@ export function invokeOpencode({
   prompt,
   cwd,
   model,
+  variant,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 }) {
   return new Promise((resolveResult) => {
     const args = ["run", "--dangerously-skip-permissions", "--format", "json", "--dir", cwd];
     if (model) args.push("--model", model);
+    if (variant) args.push("--variant", variant);
     args.push(prompt);
 
     let child;

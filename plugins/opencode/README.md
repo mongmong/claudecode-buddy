@@ -25,10 +25,10 @@ then restart Claude Code.
 
 - v0.1.0 (plan 000, shipped) — read-only review only.
 - v0.2.0 (plan 001, shipped) — write-capable run + background tasks. (Local install scripts shipped here too but were retired in plan 004 — see workspace README + D-012.)
-- v0.3.0 (plan 002, shipped) — review session continuity for `/opencode:review` and `/opencode:run` (resume the prior opencode session per `(plan-or-branch, role, model)` tuple); `--session-key` / `--reset` / `--no-session` flags; pure mkdir-EEXIST lock (manual-rm recovery for stranded locks; auto-reclaim queued for plan 005).
-- v0.4.0 (this release, plan 003) — `--style adversarial` flag on `/opencode:review` for hostile-perspective critique; opt-in Stop-hook review gate (`/opencode:gate on|off|status`) that runs a review on every actionable Claude turn with smart-skip for read-only turns + fail-open recovery.
-- v0.5.0 (plan 005) — macOS parity for `/opencode:cancel` PID-reuse defense + `--task-file` TOCTOU + `--task` stdin-as-prompt support. (Plan 004 was reclaimed for the GitHub-installable distribution change — see D-012; macOS parity moved one slot forward.)
-- v0.6.0+ (plan 006) — `flock(2)`-backed serialization replacing best-effort CAS in `lib/jobs.mjs` + the mkdir-EEXIST session lock.
+- v0.3.0 (plan 002, shipped) — review session continuity for `/opencode:review` and `/opencode:run` (resume the prior opencode session per `(plan-or-branch, role, model)` tuple); `--session-key` / `--reset` / `--no-session` flags; pure mkdir-EEXIST lock (manual-rm recovery for stranded locks; auto-reclaim queued for a future plan with proper `flock(2)` semantics).
+- v0.4.0 (plan 003, shipped) — `--style adversarial` flag on `/opencode:review` for hostile-perspective critique; opt-in Stop-hook review gate (`/opencode:gate on|off|status`) that runs a review on every actionable Claude turn with smart-skip for read-only turns + fail-open recovery.
+- v0.5.0 (plan 005, this release) — `--variant <level>` flag on `/opencode:review`, `/opencode:run`, the `prompt` subcommand, and both subagents for provider-specific reasoning effort (e.g. `high` / `max` / `minimal` — opencode forwards verbatim); automatic opencode binary discovery scanning common install locations when `OPENCODE_BIN` is unset and `opencode` isn't on `PATH`; coordinated review-timeout bump (5 min → 20 min inner, 15 min → 25 min outer Stop-hook ceiling).
+- v0.6.0+ (future plans, queued) — macOS parity for `/opencode:cancel` PID-reuse defense + `--task-file` TOCTOU + `--task` stdin-as-prompt support; `flock(2)`-backed serialization replacing best-effort CAS in `lib/jobs.mjs` + the mkdir-EEXIST session lock; auto-reclaim of stranded session locks.
 
 See `docs/specs/opencode-plugin.md`, `docs/plans/001-opencode-run-and-background.md`, and `docs/plans/002-review-session-continuity.md` in the workspace for design and implementation details.
 
@@ -118,9 +118,23 @@ blockers:
 ## Requirements
 
 - Node ≥ 18.18.
-- opencode CLI ≥ 1.14, installed and on PATH (or set `OPENCODE_BIN` to its absolute path).
+- opencode CLI ≥ 1.14. The plugin finds it via (in order): `OPENCODE_BIN` env var → `opencode` on `PATH` → an automatic scan of common install locations (`~/.opencode/bin/opencode` — the official installer's path — `~/.local/bin/`, `~/.bun/bin/`, `~/.npm-global/bin/`, `~/.npm/bin/`, `/opt/homebrew/bin/`, `/usr/local/bin/`, `/usr/bin/`). If your install is in a non-standard location, set `OPENCODE_BIN` to the absolute binary path.
 - A default `model` field in `~/.config/opencode/opencode.json`.
 - Linux for full `/opencode:cancel` PID-reuse defenses (macOS uses best-effort kill — see Known limitations).
+
+## Reasoning effort (v0.5.0+)
+
+`/opencode:review` and `/opencode:run` (and the `opencode:opencode-review` / `opencode:opencode-run` subagents) accept `--variant <level>`. The flag forwards opencode's `--variant` argument verbatim to the underlying provider — opencode documents `high`, `max`, and `minimal` as common values, but the exact set is provider-specific. Examples:
+
+```bash
+/opencode:review --variant max --model deepseek/deepseek-v4-pro
+/opencode:run --variant minimal --task "tweak this comment"
+```
+
+- The flag is **provider-specific reasoning effort**, not a model selector. Pair it with `--model` when you want both pinned.
+- Not all providers honor `--variant`; check your provider's docs. Unsupported values are silently dropped by some providers.
+- `--variant` does NOT change the session-continuity tuple (key still `(plan-or-branch, role, model)`), so you can mix variant levels across rounds of the same session.
+- The `prompt` subcommand also reads `OPENCODE_VARIANT` from the environment when `--variant` is not passed (useful for setting a default in CI).
 
 ## Environment overrides (mostly for testing)
 
@@ -131,6 +145,7 @@ blockers:
 | `OPENCODE_REPO_ROOT` | Override the working directory the companion script reviews. |
 | `CLAUDE_PROJECT_DIR` | Override the project root used to resolve `<project>/.claudecode-buddy/`. Set automatically by Claude Code; tests override. |
 | `OPENCODE_MODEL` | Override the model used by the `prompt` subcommand (the `review` and `run` subcommands use their own `--model` flag). |
+| `OPENCODE_VARIANT` | Override the reasoning-effort variant used by the `prompt` subcommand when `--variant` isn't passed. |
 | `OPENCODE_BUDDY_FORCE_INTERACTIVE=1` | Bypass the non-interactive `--yolo` guard in `runRun` (test-only). |
 | `OPENCODE_E2E=1` | Enable end-to-end tests against the real opencode CLI. |
 

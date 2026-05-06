@@ -18,7 +18,7 @@ import { execFileSync } from "node:child_process";
 import { dirname, join as joinPath } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const HOOK_TIMEOUT_MS = 15 * 60 * 1000; // outer ceiling; inner dispatcher timeout (5min) fires first
+const HOOK_TIMEOUT_MS = 25 * 60 * 1000; // outer ceiling; inner dispatcher timeout (20min) fires first — keep 5min headroom over the inner cap so the inner gets to report cleanly before the outer trips
 
 // Top-level fail-open handlers — registered BEFORE any code that could throw.
 process.on("uncaughtException", (err) => {

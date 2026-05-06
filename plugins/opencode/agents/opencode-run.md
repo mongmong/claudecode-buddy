@@ -23,7 +23,7 @@ TASK_FILE="$PROMPT_DIR/task.txt"
 cat > "$TASK_FILE" <<'OPENCODE_PROMPT_DELIMITER_DO_NOT_USE_IN_PROMPT_xK7p2qR9_END'
 <orchestrator's full task description — any content, including $variables, backticks, quotes>
 OPENCODE_PROMPT_DELIMITER_DO_NOT_USE_IN_PROMPT_xK7p2qR9_END
-node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" run --task-file "$TASK_FILE" [--model "<provider/model>"] [--yolo] [--background] [--session-key "<name>"] [--reset] [--no-session]
+node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" run --task-file "$TASK_FILE" [--model "<provider/model>"] [--variant "<high|max|minimal|...>"] [--yolo] [--background] [--session-key "<name>"] [--reset] [--no-session]
 RC=$?
 rm -rf "$PROMPT_DIR"
 exit $RC
@@ -45,6 +45,10 @@ Session continuity (v0.3.0+):
 - Pass `--session-key "<name>"` to override the auto-derived key (e.g., bridge across branches).
 - Pass `--reset` to discard the stored session-id (fresh session this call + replace the stored id).
 - Pass `--no-session` for a one-off task that shouldn't pollute the running thread (skips reuse + skips save).
+
+Reasoning effort (v0.5.0+):
+
+- Pass `--variant "<level>"` to forward a provider-specific reasoning effort to opencode (e.g. `high`, `max`, `minimal`). The exact set is provider-defined; the companion forwards the value unchanged. Honored only by providers that expose reasoning variants.
 
 Output:
 

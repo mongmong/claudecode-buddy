@@ -1,6 +1,6 @@
 ---
 description: Run an opencode code review against local git state (foreground only in v1)
-argument-hint: '[--scope auto|working-tree|branch] [--base <ref>] [--model <provider/model>] [--style friendly|adversarial] [--session-key <name>] [--reset] [--no-session]'
+argument-hint: '[--scope auto|working-tree|branch] [--base <ref>] [--model <provider/model>] [--variant <high|max|minimal|...>] [--style friendly|adversarial] [--session-key <name>] [--reset] [--no-session]'
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
@@ -60,7 +60,12 @@ Output handling:
 
 Argument handling:
 - Preserve the user's arguments exactly (apart from injecting the model picker's choice).
-- The script accepts `--scope`, `--base`, `--model`, `--style`, `--session-key`, `--reset`, and `--no-session`. Unknown flags or unexpected positional arguments are rejected with exit 2 and a clear error message — surface that error to the user verbatim.
+- The script accepts `--scope`, `--base`, `--model`, `--variant`, `--style`, `--session-key`, `--reset`, and `--no-session`. Unknown flags or unexpected positional arguments are rejected with exit 2 and a clear error message — surface that error to the user verbatim.
+
+Reasoning effort (v0.5.0+):
+- Pass `--variant <level>` to select a provider-specific reasoning effort. Common values: `high`, `max`, `minimal` — the exact set is provider-defined and forwarded to opencode unchanged.
+- Useful when you want a deeper reasoning pass on a tricky review without switching models. Not all models honor `--variant`; check your provider's docs.
+- `--variant` does NOT change the session-continuity tuple (key still `(plan-or-branch, role, model)`), so a session can mix variant levels across rounds.
 
 Adversarial review (v0.4.0+):
 

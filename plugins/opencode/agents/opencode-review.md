@@ -48,7 +48,9 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" prompt --prompt-file "$PROMPT_FIL
 
 If `--model` is omitted, the prompt subcommand falls back to the `OPENCODE_MODEL` env var (if set), then to opencode's configured default.
 
-2. **Git-diff convenience (SECONDARY)** — only when the orchestrator explicitly says "review the working-tree diff" or "review branch X" without supplying its own prompt text. Arguments here are *flag-style only* (`--scope`, `--base`, `--model`, `--style`, `--session-key`, `--reset`, `--no-session`); the companion's argument parser whitelists known flags so injection through this route is bounded.
+**Optional: orchestrator-supplied reasoning effort (v0.5.0+).** Pass `--variant <level>` to forward a provider-specific reasoning effort (e.g. `high`, `max`, `minimal`). The companion forwards the value unchanged to opencode; honored only by providers that expose reasoning variants. If `--variant` is omitted, the prompt subcommand falls back to the `OPENCODE_VARIANT` env var (if set), then to opencode's default.
+
+2. **Git-diff convenience (SECONDARY)** — only when the orchestrator explicitly says "review the working-tree diff" or "review branch X" without supplying its own prompt text. Arguments here are *flag-style only* (`--scope`, `--base`, `--model`, `--variant`, `--style`, `--session-key`, `--reset`, `--no-session`); the companion's argument parser whitelists known flags so injection through this route is bounded.
 
 Adversarial style (v0.4.0+): pass `--style adversarial` to use the hostile-reviewer prompt template (separate session-continuity tuple from friendly review).
 

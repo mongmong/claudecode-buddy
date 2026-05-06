@@ -29,7 +29,7 @@ const VALID_STYLES = new Set(["friendly", "adversarial"]);
 
 function parseReviewArgs(rawArgs) {
   const argv = rawArgs.flatMap((a) => splitArgs(a));
-  const out = { scope: "auto", base: "main", model: null, sessionKey: null, reset: false, noSession: false, style: "friendly" };
+  const out = { scope: "auto", base: "main", model: null, variant: null, sessionKey: null, reset: false, noSession: false, style: "friendly" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--scope") {
@@ -47,6 +47,10 @@ function parseReviewArgs(rawArgs) {
       const v = argv[++i];
       if (v === undefined) return { ok: false, error: "--model requires a value (provider/model)" };
       out.model = v;
+    } else if (a === "--variant") {
+      const v = argv[++i];
+      if (v === undefined) return { ok: false, error: "--variant requires a value (provider-specific reasoning effort, e.g. high|max|minimal)" };
+      out.variant = v;
     } else if (a === "--session-key") {
       const v = argv[++i];
       if (v === undefined) return { ok: false, error: "--session-key requires a value" };
@@ -63,7 +67,7 @@ function parseReviewArgs(rawArgs) {
       }
       out.style = v;
     } else if (a.startsWith("--")) {
-      return { ok: false, error: `unknown flag: ${a}. Supported: --scope, --base, --model, --session-key, --reset, --no-session, --style.` };
+      return { ok: false, error: `unknown flag: ${a}. Supported: --scope, --base, --model, --variant, --session-key, --reset, --no-session, --style.` };
     } else if (a.length > 0) {
       return { ok: false, error: `unexpected positional argument: ${a}. The review subcommand only accepts flag-style arguments.` };
     }
@@ -137,6 +141,7 @@ function parsePromptArgs(rawArgs) {
   const argv = rawArgs.flatMap((a) => splitArgs(a));
   let promptFile = null;
   let model = null;
+  let variant = null;
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -146,6 +151,9 @@ function parsePromptArgs(rawArgs) {
     } else if (a === "--model") {
       model = argv[++i];
       if (model === undefined) return { ok: false, error: "--model requires a provider/model argument" };
+    } else if (a === "--variant") {
+      variant = argv[++i];
+      if (variant === undefined) return { ok: false, error: "--variant requires a value (provider-specific reasoning effort, e.g. high|max|minimal)" };
     } else if (a === "--stdin") {
       return {
         ok: false,
@@ -154,7 +162,7 @@ function parsePromptArgs(rawArgs) {
           "Use --prompt-file <path-under-$TMPDIR/opencode-prompts/> instead.",
       };
     } else if (a.startsWith("--")) {
-      return { ok: false, error: `unknown flag: ${a}. Supported: --prompt-file, --model.` };
+      return { ok: false, error: `unknown flag: ${a}. Supported: --prompt-file, --model, --variant.` };
     } else if (a.length > 0) {
       positional.push(a);
     }
@@ -178,13 +186,13 @@ function parsePromptArgs(rawArgs) {
       };
     }
     try {
-      return { ok: true, text: readFileSync(promptFile, "utf8"), model };
+      return { ok: true, text: readFileSync(promptFile, "utf8"), model, variant };
     } catch (err) {
       return { ok: false, error: `failed to read prompt file ${promptFile}: ${err.message}` };
     }
   }
 
-  return { ok: true, text: positional.join(" "), model };
+  return { ok: true, text: positional.join(" "), model, variant };
 }
 
 function parseRunArgs(rawArgs) {
@@ -205,6 +213,7 @@ function parseRunArgs(rawArgs) {
   let task = null;
   let taskFile = null;
   let model = null;
+  let variant = null;
   let yolo = false;
   let background = false;
   let sessionKey = null;
@@ -233,6 +242,11 @@ function parseRunArgs(rawArgs) {
       const v = argv[++i];
       if (v === undefined) return { ok: false, error: "--model requires a value" };
       model = v;
+    } else if (a === "--variant") {
+      const dup = guardDuplicate("--variant"); if (dup) return dup;
+      const v = argv[++i];
+      if (v === undefined) return { ok: false, error: "--variant requires a value (provider-specific reasoning effort, e.g. high|max|minimal)" };
+      variant = v;
     } else if (a === "--session-key") {
       const dup = guardDuplicate("--session-key"); if (dup) return dup;
       const v = argv[++i];
@@ -247,7 +261,7 @@ function parseRunArgs(rawArgs) {
     } else if (a === "--background") {
       background = true;
     } else if (a.startsWith("--")) {
-      return { ok: false, error: `unknown flag: ${a}. Supported: --task, --task-file, --model, --yolo, --background, --session-key, --reset, --no-session.` };
+      return { ok: false, error: `unknown flag: ${a}. Supported: --task, --task-file, --model, --variant, --yolo, --background, --session-key, --reset, --no-session.` };
     } else if (a.length > 0) {
       return { ok: false, error: `unexpected positional argument: ${a}. Use --task or --task-file.` };
     }
@@ -266,7 +280,7 @@ function parseRunArgs(rawArgs) {
     if (!safeRead.ok) return { ok: false, error: safeRead.error };
     task = safeRead.value;
   }
-  return { ok: true, value: { task, model, yolo, background, sessionKey, reset, noSession } };
+  return { ok: true, value: { task, model, variant, yolo, background, sessionKey, reset, noSession } };
 }
 
 function emitTextOnly(text) {
@@ -442,6 +456,7 @@ async function runReview(rawArgs) {
   const projectDir = process.env.CLAUDE_PROJECT_DIR ?? cwd;
   const opencodeArgs = ["run", "--dangerously-skip-permissions", "--format", "json", "--dir", cwd];
   if (args.model) opencodeArgs.push("--model", args.model);
+  if (args.variant) opencodeArgs.push("--variant", args.variant);
 
   const invocation = await dispatchOpencode({
     binary: cli.binary,
@@ -491,12 +506,14 @@ async function runPrompt(rawArgs) {
   }
 
   const model = input.model ?? process.env.OPENCODE_MODEL ?? null;
+  const variant = input.variant ?? process.env.OPENCODE_VARIANT ?? null;
 
   const invocation = await invokeOpencode({
     binary: cli.binary,
     prompt: input.text,
     cwd,
     model,
+    variant,
   });
 
   if (!invocation.ok) {
@@ -545,6 +562,7 @@ async function runRun(rawArgs) {
   const opencodeArgs = ["run", "--format", "json", "--dir", cwd];
   if (args.yolo) opencodeArgs.push("--dangerously-skip-permissions");
   if (args.model) opencodeArgs.push("--model", args.model);
+  if (args.variant) opencodeArgs.push("--variant", args.variant);
 
   // Foreground runs are synchronous — pid:null so /opencode:cancel
   // short-circuits cleanly rather than confusingly checking buddy's own pid.
@@ -653,6 +671,7 @@ function runRunBackground(args, cwd, projectDir, cli) {
     "--dir", cwd,
   ];
   if (args.model) opencodeArgs.push("--model", args.model);
+  if (args.variant) opencodeArgs.push("--variant", args.variant);
   if (resumeId !== null) opencodeArgs.push("--session", resumeId);
   opencodeArgs.push(args.task);
 
