@@ -153,20 +153,70 @@ test("OPENCODE_BIN takes precedence over the well-known scan", () => {
 test("PATH lookup takes precedence over the well-known scan", () => {
   const { home, cleanup } = makeFakeHome();
   try {
-    dropFakeBinary(home, "~/.opencode/bin/opencode");
-    // Use the host PATH — the real `opencode` binary on this machine should
-    // be found via PATH before the scan ever runs. Skip if no real opencode
-    // is installed in this environment.
-    let realOpencode = false;
-    try {
-      const { execFileSync } = require("node:child_process");
-      execFileSync("opencode", ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
-      realOpencode = true;
-    } catch {}
-    if (!realOpencode) return;
-    const result = detectOpencode({ env: { PATH: process.env.PATH, HOME: home } });
+    // Build a sandbox PATH with our own fake `opencode` so we don't depend
+    // on the host having a real opencode installed (and so the test runs
+    // hermetically in CI). Drop a separate fake at the well-known scan
+    // path that should NOT be picked because PATH wins.
+    const pathDir = join(home, "fake-path-dir");
+    mkdirSync(pathDir, { recursive: true });
+    const pathBin = join(pathDir, "opencode");
+    writeFileSync(pathBin, FAKE_OPENCODE);
+    chmodSync(pathBin, 0o755);
+    const scanBin = dropFakeBinary(home, "~/.opencode/bin/opencode");
+    assert.notEqual(pathBin, scanBin, "test sanity — PATH bin and scan bin must differ");
+
+    const result = detectOpencode({ env: { PATH: pathDir, HOME: home } });
+    assert.equal(result.installed, true, `guidance: ${result.guidance}`);
+    // PATH lookup returns the bare "opencode" name (resolveBinary just
+    // returns the string "opencode" when execFileSync succeeds), whereas
+    // the scan would return the absolute scan path. Bare-name === PATH won.
+    assert.equal(
+      result.binary,
+      "opencode",
+      `expected PATH lookup to return bare 'opencode' (PATH wins); got ${result.binary}`,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("PATH lookup is preferred even when a fake at ~/.opencode/bin would also match", () => {
+  // Defense in depth: if a future refactor accidentally swaps the order of
+  // PATH lookup and scan, this test catches it because we rig the PATH
+  // binary to print a distinctive version string and the scan binary to
+  // print a different one. The detected version proves which path won.
+  const { home, cleanup } = makeFakeHome();
+  try {
+    const pathDir = join(home, "fake-path-dir");
+    mkdirSync(pathDir, { recursive: true });
+    const pathBin = join(pathDir, "opencode");
+    writeFileSync(
+      pathBin,
+      `#!/bin/sh
+[ "$1" = "--version" ] && echo "from-path-lookup" && exit 0
+exit 0
+`,
+    );
+    chmodSync(pathBin, 0o755);
+    // Scan path — distinct version string so we can tell them apart.
+    const scanPath = join(home, ".opencode/bin/opencode");
+    mkdirSync(join(scanPath, ".."), { recursive: true });
+    writeFileSync(
+      scanPath,
+      `#!/bin/sh
+[ "$1" = "--version" ] && echo "from-scan-fallback" && exit 0
+exit 0
+`,
+    );
+    chmodSync(scanPath, 0o755);
+
+    const result = detectOpencode({ env: { PATH: pathDir, HOME: home } });
     assert.equal(result.installed, true);
-    assert.equal(result.binary, "opencode", "PATH lookup returns the bare 'opencode' name; scan would return an absolute path");
+    assert.match(
+      result.version,
+      /from-path-lookup/,
+      `expected PATH binary to win; got version: ${result.version}`,
+    );
   } finally {
     cleanup();
   }

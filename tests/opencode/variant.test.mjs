@@ -152,6 +152,45 @@ test("run --variant with no value is rejected with exit 2", async () => {
   }
 });
 
+test("run --background forwards --variant through the supervisor argv spread", async () => {
+  // Background runs are the riskiest call path because --variant has to
+  // survive: parent → supervisor argv (positionals + ...opencodeArgs spread
+  // in buddy.mjs:runRunBackground) → supervisor.mjs spawns opencode with
+  // those args. A future refactor that mishandled the rest spread would
+  // silently drop the flag without breaking foreground tests. Codex round-1
+  // review flagged this as a coverage gap; this test closes it.
+  const { dir, cleanup: cleanupRepo } = makeTempRepo();
+  const { path: argPath, cleanup: cleanupRecord } = recordPath();
+  try {
+    setupRepo(dir);
+    const result = await runCompanion(
+      ["run", "--background", "--yolo", "--task", "x", "--model", "vendor/m1", "--variant", "max", "--no-session"],
+      {
+        OPENCODE_BIN: RECORD_BIN,
+        OPENCODE_REPO_ROOT: dir,
+        CLAUDE_PROJECT_DIR: dir,
+        OPENCODE_RECORD_ARGS_PATH: argPath,
+      },
+    );
+    assert.equal(result.code, 0, `stderr: ${result.stderr}`);
+    assert.match(result.stdout, /Started job/);
+
+    // Supervisor + child execute asynchronously after the parent returns.
+    // 2s is the same wait the existing run-cmd background tests use.
+    await new Promise((r) => setTimeout(r, 2000));
+
+    const invocations = readRecordedArgv(argPath);
+    assert.ok(invocations.length >= 1, `expected the supervisor to spawn opencode at least once; recorded: ${invocations.length}`);
+    const argv = invocations[invocations.length - 1];
+    const variantIdx = argv.indexOf("--variant");
+    assert.ok(variantIdx >= 0, `expected --variant in supervisor-spawned argv, got: ${JSON.stringify(argv)}`);
+    assert.equal(argv[variantIdx + 1], "max");
+  } finally {
+    cleanupRecord();
+    cleanupRepo();
+  }
+});
+
 test("run rejects duplicate --variant flag with exit 2", async () => {
   const { dir, cleanup } = makeTempRepo();
   try {

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 // Well-known install locations the official opencode installer or common
@@ -32,9 +32,12 @@ function isExecutableFile(path) {
   try {
     const st = statSync(path);
     if (!st.isFile()) return false;
-    // Mode bit 0o111 — owner|group|other execute. On Windows this is always
-    // truthy for regular files; on Unix it correctly filters non-executable.
-    return (st.mode & 0o111) !== 0;
+    // Use accessSync(X_OK) instead of a raw mode-bit check — accessSync
+    // tests whether the *calling process* can execute the file (honors
+    // owner / group / other split via real uid/gid), where (mode & 0o111)
+    // would accept a file executable by some other user but not us.
+    accessSync(path, fsConstants.X_OK);
+    return true;
   } catch {
     return false;
   }

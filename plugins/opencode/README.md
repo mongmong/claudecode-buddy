@@ -118,7 +118,7 @@ blockers:
 ## Requirements
 
 - Node ≥ 18.18.
-- opencode CLI ≥ 1.14. The plugin finds it via (in order): `OPENCODE_BIN` env var → `opencode` on `PATH` → an automatic scan of common install locations (`~/.opencode/bin/opencode` — the official installer's path — `~/.local/bin/`, `~/.bun/bin/`, `~/.npm-global/bin/`, `/opt/homebrew/bin/`, `/usr/local/bin/`, `/usr/bin/`). If your install is in a non-standard location, set `OPENCODE_BIN` to the absolute binary path.
+- opencode CLI ≥ 1.14. The plugin finds it via (in order): `OPENCODE_BIN` env var → `opencode` on `PATH` → an automatic scan of common install locations (`~/.opencode/bin/opencode` — the official installer's path — `~/.local/bin/`, `~/.bun/bin/`, `~/.npm-global/bin/`, `~/.npm/bin/`, `/opt/homebrew/bin/`, `/usr/local/bin/`, `/usr/bin/`). If your install is in a non-standard location, set `OPENCODE_BIN` to the absolute binary path.
 - A default `model` field in `~/.config/opencode/opencode.json`.
 - Linux for full `/opencode:cancel` PID-reuse defenses (macOS uses best-effort kill — see Known limitations).
 
