@@ -130,7 +130,7 @@ The proof is **inode binding via fd**, not path-resolution. Concrete determinist
 - [ ] Step 1: write the `openFdBound` symlink-swap test (red)
   Symlink-swap-after-open scenario. Assert `readFileSync(fd)` returns original content; `realpathSync('/proc/self/fd/' + fd)` returns original path.
 - [ ] Step 2: run → red (helper doesn't exist yet)
-- [ ] Step 3: create `lib/fd-bound.mjs` with `openFdBound` (Linux-only `/proc/self/fd/`; on non-Linux, `fdResolvedPath` is `null` and callers must skip the allowed-dir check)
+- [ ] Step 3: create `lib/fd-bound.mjs` with `openFdBound` (Linux-only `/proc/self/fd/` resolution; on non-Linux, `fdResolvedPath` is `null`). **Callers ALWAYS run `isUnderAllowedDir(path)` regardless of platform** — what changes by platform is only the *additional* fd-resolved-path validation: Linux callers add it on top of the path-based check; macOS callers skip only that additional fd-bound step (path-based check still runs). Per N2 resolution.
 - [ ] Step 4: run → green
 - [ ] Step 5: write the integration test for `--prompt-file` (red — buggy code currently uses path-based `readFileSync`)
   Same symlink-swap scenario but driven through `runCompanion(["prompt", "--prompt-file", ...])`. Original content == "safe-content" should appear in opencode args (via the `mock-opencode-record-args.mjs` fixture).
@@ -359,7 +359,7 @@ The dynamic import preserves fail-open semantics (per [d2]'s blocker). GLM's con
 
 **Files:**
 - Create: `plugins/opencode/scripts/lib/pid-identity.mjs` — exported `pidIsOurSupervisor(pid, jobId, opts)` with injectable platform + cmdlineReader.
-- Modify: `plugins/opencode/scripts/lib/supervisor.mjs` — add SIGTERM + SIGINT handlers (defensive structure above) AFTER dynamic imports; document placement.
+- Modify: `plugins/opencode/scripts/lib/supervisor.mjs` — register SIGTERM + SIGINT handlers **at the top of the module** (right after `process.title` / inline-function definitions, BEFORE dynamic imports) per N1 round-3 resolution. The handler's body branches on `dynamicImportsReady` — uses inline path-derivation + inline atomic JSON write before imports complete, switches to real `releaseLock`/`updateJob` after. See "Two-layer handler design" above.
 - Modify: `plugins/opencode/scripts/buddy.mjs:363-381` — replace inline `pidIsOurSupervisor` with `import { pidIsOurSupervisor } from "./lib/pid-identity.mjs"` (static — buddy.mjs is the main runner, doesn't have fail-open constraints).
 - Modify: `plugins/opencode/hooks/session-start.mjs` — dynamic import + use in orphan detection.
 - Test: `tests/opencode/pid-identity.test.mjs` (NEW) — unit-test the helper with both injected platforms (linux/darwin) and verify each branch's logic. Linux-CI-friendly via injection.
@@ -534,7 +534,18 @@ Plan-006 adds approximately **12-15 new tests** across 5 phases (revised after [
 | N2 | Codex, self-opus | Phase 2 — clarify `openFdBound` semantics: returns `{fd, fstat, fdResolvedPath}` where `fdResolvedPath` is `realpathSync('/proc/self/fd/<fd>')` on Linux, `null` elsewhere. **Callers always run `isUnderAllowedDir(path)` (path-based)**; additionally on Linux, validate `fdResolvedPath` against allowed dir for fd-bound TOCTOU defense. macOS retains the existing path-based-only behavior + the prior symlink-swap TOCTOU known-limitation (plan-006 does NOT close it on macOS; F_GETPATH-based defense queued for plan-009+). |
 | Non-blocker (GLM, self-opus) | — | All `openFdBound` callers wrap fd usage in `try { ... } finally { closeSync(fd) }` to prevent fd leak on validation-failure path. |
 
-### Round 3 (post-N1-N2-fix) verdicts — TBD
+### Round 3 (HEAD `961681d`)
+
+| # | Reviewer | Verdict |
+|---|---|---|
+| 1 | Self-Opus 4.7 | ✅ approve (N1+N2 fixes sound) |
+| 2 | Codex | ⚠️ needs-attention — N1 [RESOLVED]; N2 [STILL OPEN] due to stale prose at Step 3 line 133 + Phase 5 file-bullet line 362 contradicting the round-3 fix |
+| 3 | DeepSeek V4 Pro | (already approved at round-2; not re-dispatched) |
+| 4 | GLM 5.1 | (already approved at round-2; not re-dispatched) |
+
+**\[codex r3\]:** N1 [RESOLVED] — two-layer handler design is sound, no race at the `dynamicImportsReady` flag boundary (Node single-threaded event loop). N2 [STILL OPEN] — Step 3 of openFdBound description (line 133) still said "callers must skip the allowed-dir check" which contradicts the fix; Phase 5 file-bullet (line 362) still said "AFTER dynamic imports" which contradicts the N1 fix. Both are stale-prose leftovers from prior revisions; corrected in this commit.
+
+### Round 4 (post-prose-fix) verdict — TBD
 
 ## Code Review (4-way — to be filled in after implementation)
 
