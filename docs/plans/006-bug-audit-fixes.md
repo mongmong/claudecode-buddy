@@ -545,7 +545,16 @@ Plan-006 adds approximately **12-15 new tests** across 5 phases (revised after [
 
 **\[codex r3\]:** N1 [RESOLVED] — two-layer handler design is sound, no race at the `dynamicImportsReady` flag boundary (Node single-threaded event loop). N2 [STILL OPEN] — Step 3 of openFdBound description (line 133) still said "callers must skip the allowed-dir check" which contradicts the fix; Phase 5 file-bullet (line 362) still said "AFTER dynamic imports" which contradicts the N1 fix. Both are stale-prose leftovers from prior revisions; corrected in this commit.
 
-### Round 4 (post-prose-fix) verdict — TBD
+### Round 4 (HEAD `dd8804e`) — ✅ ALL FOUR APPROVE
+
+| # | Reviewer | Verdict |
+|---|---|---|
+| 1 | Self-Opus 4.7 | ✅ approve |
+| 2 | Codex | ✅ approve — "both stale-prose items corrected. No remaining ambiguities or contradictions." |
+| 3 | DeepSeek V4 Pro | ✅ approve (carried from round-2) |
+| 4 | GLM 5.1 | ✅ approve (carried from round-2) |
+
+**Plan-006 cleared for implementation.** Per CLAUDE.md, all four concur — implementation proceeds on this branch starting with Phase 1.
 
 ## Code Review (4-way — to be filled in after implementation)
 
