@@ -71,22 +71,32 @@ Audit outputs preserved at `/tmp/cb-audit/{deepseek,glm}.{out,err}` for the dura
 
 **Goal:** close the realpath→read TOCTOU window for both file-input paths.
 
-**Helper extraction strategy (revised after \[g\] non-blocker):**
+**Helper extraction strategy (revised after \[g\] + N2):**
 Do **not** force both call sites through one validation function — they need different validation logic.
 Extract a minimal primitive:
 
 ```js
 // lib/fd-bound.mjs (NEW)
-// Open the path, return {fd, fstatSync, fdResolvedPath} where:
-//   - fd is the open descriptor (caller MUST closeSync after use)
+// Open the path, return {fd, fstat, fdResolvedPath} where:
+//   - fd is the open descriptor (caller MUST closeSync after use, in try/finally)
 //   - fstat is the fstat result on the fd (use to check isFile / isSymbolicLink etc)
-//   - fdResolvedPath is realpathSync('/proc/self/fd/<fd>') on Linux, null elsewhere
+//   - fdResolvedPath is realpathSync('/proc/self/fd/<fd>') on Linux, null on macOS
 export function openFdBound(path) { ... }
 ```
 
-Then `readTaskFileFdBound` calls `openFdBound` + does the `--task-file`-specific allowed-dir check + `readFileSync(fd)`.
-A new `readPromptFileFdBound` calls `openFdBound` + does the `--prompt-file`-specific check (same allowed-dir, but the **error message says `--prompt-file` not `--task-file`** — per [d3]).
-A new `readUntrackedFdBound` (in `scope.mjs`) calls `openFdBound` + checks `fstatSync.isFile()` + `readFileSync(fd)`.
+**Validation contract (resolves N2):**
+- Callers ALWAYS run `isUnderAllowedDir(path)` (path-based check, current behavior on both Linux + macOS).
+- On Linux: callers ADDITIONALLY validate `fdResolvedPath` against the allowed-dir base. This is the fd-bound TOCTOU defense — even if the path is swapped to a symlink between `isUnderAllowedDir(path)` and `readFileSync(fd)`, `fdResolvedPath` still points to the original inode's path under the allowed dir.
+- On macOS: `fdResolvedPath` is `null`; callers skip the additional fd-bound check and rely on the path-based check alone. **macOS retains the existing symlink-swap TOCTOU known-limitation** (path resolves at `realpathSync` time, content read happens later — race window). Plan-006 does NOT close this on macOS; F_GETPATH-based defense (via native binding or `stat -f` shell-out) is queued for plan-009+.
+
+So macOS callers see the **status-quo behavior** (path-based isUnderAllowedDir + readFileSync(fd) where fd-binding still gives inode-stability for the read but no path-stability defense). Linux callers see the **upgraded behavior** (path-based + fd-resolved-path validation).
+
+**fd leak prevention (per GLM + self-opus non-blocker):**
+Every caller wraps fd usage in `try { ... } finally { try { closeSync(fd); } catch {} }`. The existing `readTaskFileFdBound` already does this; new callers (`readPromptFileFdBound`, `readUntrackedFdBound`) follow the same shape.
+
+Then `readTaskFileFdBound` calls `openFdBound` + does the `--task-file`-specific allowed-dir check (path-based always; fd-resolved-path additionally on Linux) + `readFileSync(fd)` — with `try/finally closeSync`.
+A new `readPromptFileFdBound` is structurally identical but with `--prompt-file` in the error messages (per \[d3\]).
+A new `readUntrackedFdBound` (in `scope.mjs`) calls `openFdBound` + checks `fstat.isFile()` + `readFileSync(fd)` — also with `try/finally closeSync`.
 
 **Files:**
 - Create: `plugins/opencode/scripts/lib/fd-bound.mjs` — `openFdBound(path)` primitive.
@@ -225,30 +235,72 @@ This matches `stop-review-gate-hook.mjs`'s own behavior — it fails open on mod
 
 ### 5a. SIGTERM handler in supervisor.mjs (H3)
 
-**Defensive structure (revised after \[c6\]+\[g2\]):** mirror the existing `uncaughtException` handler at `supervisor.mjs:65-93`. Each cleanup step in its own `try/catch`; `process.exit(143)` in `finally`. Placement: AFTER the dynamic imports complete (per [d4] non-blocker) so we can call the real `releaseLock()` and `updateJob()`; if the imports haven't completed yet (rare — only if SIGTERM arrives <100ms after spawn), `uncaughtException` already covers via inline `rmSync(inlineLockDir(), force=true)` + inline JSON write.
+**Defensive structure (revised after \[c6\]+\[g2\] + round-2 N1):**
+
+**Resolves N1 (Codex round-2):** The original revision placed SIGTERM handlers AFTER dynamic imports and claimed `uncaughtException` covered the pre-import window. **This was wrong — SIGTERM is a signal, not a thrown exception; `uncaughtException` does not fire on signals.** The 5-50ms import-resolution window had no handler, so SIGTERM during that window would have killed the supervisor without releasing the lock OR updating the job record. (DeepSeek-Pro round-2 argued the window is "negligible because no lock is held," but that's also incorrect: the parent acquires the lock BEFORE spawn and ownership transfers around the `"spawn"` event, so during the supervisor's import window the lock IS held by whichever side hasn't completed the handoff.)
+
+**Two-layer handler design (resolves N1):**
+
+1. **Inline early handler** registered immediately after `process.title` / `inlineLockDir`/`inlineJobPath` definitions, BEFORE dynamic imports. Uses the same inline path-derivation functions the existing `uncaughtException` handler uses. Module-scope `let child = null` so the handler can `child.kill(signal)` if it's been spawned. Catches SIGTERM/SIGINT during the 5-50ms import window.
+
+2. **Same handler reused after dynamic imports** — once `releaseLock` / `updateJob` from real modules are available, the handler's body uses them; before, it falls back to inline `rmSync` + inline atomic JSON write. A boolean flag (e.g., `dynamicImportsReady = false → true after await`) gates which branch runs.
 
 ```js
-// In supervisor.mjs, AFTER the dynamic imports of jobs.mjs / sessions.mjs / session-capture.mjs:
-process.on("SIGTERM", () => sigtermHandler("SIGTERM"));
-process.on("SIGINT",  () => sigtermHandler("SIGINT"));
+// At top of supervisor.mjs, right after argv validation + process.title:
+let child = null;                  // module-scope; assigned after dynamic imports + spawn
+let dynamicImportsReady = false;   // flipped to true after the await blocks below
+let signalHandled = false;         // prevents double-fire if SIGTERM + SIGINT both arrive
 
-function sigtermHandler(sig) {
+function handleSignal(sig) {
+  if (signalHandled) return;
+  signalHandled = true;
   try {
-    try { releaseLock(); } catch {}
-    try {
-      updateJob(projectDir, jobId, {
-        status: "cancelled",
-        finished_at: new Date().toISOString(),
-        exit_code: 143,
-      }, { expectedStatus: ["running", "session-ended"] });
-    } catch {}
+    if (dynamicImportsReady) {
+      // Real-module path: identical to the post-import handler body.
+      try { releaseLock(); } catch {}
+      try {
+        updateJob(projectDir, jobId, {
+          status: "cancelled",
+          finished_at: new Date().toISOString(),
+          exit_code: sig === "SIGINT" ? 130 : 143,
+        }, { expectedStatus: ["running", "session-ended"] });
+      } catch {}
+    } else {
+      // Inline-fallback path: dynamic imports haven't resolved yet.
+      try {
+        if (!degraded) rmSync(inlineLockDir(), { recursive: true, force: true });
+      } catch {}
+      try {
+        const jobPath = inlineJobPath();
+        const record = JSON.parse(readFileSync(jobPath, "utf8"));
+        record.status = "cancelled";
+        record.exit_code = sig === "SIGINT" ? 130 : 143;
+        record.finished_at = new Date().toISOString();
+        const tmp = `${jobPath}.tmp.${process.pid}.${Date.now()}`;
+        writeFileSync(tmp, JSON.stringify(record, null, 2) + "\n");
+        renameSync(tmp, jobPath);
+      } catch {}
+    }
   } finally {
-    // Try to terminate the child opencode process if still alive.
-    try { if (child && !child.killed) child.kill("SIGTERM"); } catch {}
-    process.exit(143);
+    try { if (child && !child.killed) child.kill(sig); } catch {}
+    process.exit(sig === "SIGINT" ? 130 : 143);
   }
 }
+process.on("SIGTERM", () => handleSignal("SIGTERM"));
+process.on("SIGINT",  () => handleSignal("SIGINT"));
+
+// ... existing uncaughtException handler ...
+
+// Dynamic imports:
+const { updateJob, jobsDir } = await import("./jobs.mjs");
+const { saveSessionId, deleteSessionId, sessionLockPath } = await import("./sessions.mjs");
+const { captureSessionIdFromStderr, captureLatestSessionForCwd } = await import("./session-capture.mjs");
+dynamicImportsReady = true;
 ```
+
+The pre-import inline branch has identical semantics to the post-import branch — just uses inline path-derivation + inline atomic write instead of imported helpers. The post-import branch uses the real helpers. The boolean flag ensures the right branch runs at the right time.
+
+**Test expectation update (round-3):** add a test that triggers SIGTERM in the pre-import window via a fixture supervisor with a deliberately-slowed dynamic import. Use `OPENCODE_BUDDY_TEST_SLOW_IMPORT_MS=200` env-var seam to force a 200ms delay before dynamic imports complete; spawn supervisor, send SIGTERM within 200ms, assert lock dir is gone + job marked cancelled. Counter-test: same but without the slow-import seam, asserting the post-import branch ran.
 
 ### 5b. macOS cmdline check (C2)
 
@@ -452,7 +504,37 @@ Plan-006 adds approximately **12-15 new tests** across 5 phases (revised after [
 - Add Phase 6: version bump (0.5.0 → 0.5.1), CHANGELOG entry, README "Known limitations" updates, plan-006 post-execution report fill-in.
 - Update test count expectations: 8 → ~12-15 tests across the 5 phases (red-green-refactor + edge cases per phase).
 
-### Round 2 (post-revision) verdicts — TBD after revision commit
+### Round 2 (HEAD `6585a0e`)
+
+| # | Reviewer | Verdict | Output |
+|---|---|---|---|
+| 1 | Self-Opus 4.7 | ⚠️ needs-attention | inline below |
+| 2 | Codex | ⚠️ needs-attention | (in conversation log) |
+| 3 | DeepSeek V4 Pro | ✅ approve | `/tmp/cb-plan006/deepseek-pro-r2.out` |
+| 4 | GLM 5.1 | ✅ approve | `/tmp/cb-plan006/glm-r2.out` |
+
+**\[self-opus r2\]:** All 6 round-1 items confirmed RESOLVED. Two NEW blockers (matching Codex):
+- [s-r2-1] Phase 2 `openFdBound` "non-Linux callers must skip allowed-dir check" contradicts scope-out's "path-based check still runs" — same as Codex N2.
+- [s-r2-2] Phase 5a SIGTERM handler placement after dynamic imports leaves a 5-50ms unprotected window; my plan claimed `uncaughtException` covers it, but **SIGTERM is a signal, not an exception** — same as Codex N1.
+- [s-r2-3] Non-blocker: `readPromptFileFdBound` and similar callers risk fd leak on validation-failure path (open → validate fails → return without closeSync). Need `try/finally { closeSync(fd) }` in each caller — GLM also flagged.
+
+**\[codex r2\]:** All 6 round-1 items `[RESOLVED]`. Two NEW blockers:
+- [c-r2-1 = N1] Phase 5a SIGTERM pre-import window unprotected. SIGTERM is a signal, not a thrown exception; `uncaughtException` doesn't fire on SIGTERM. The 5-50ms import-resolution window has no handler.
+- [c-r2-2 = N2] Phase 2 `openFdBound` allowed-dir contradiction on macOS — same as [s-r2-1].
+
+**\[opencode:glm-5.1 r2\]:** ✅ **approve.** All 3 round-1 items `[RESOLVED]`. No new blockers, but one minor implementation note: `readPromptFileFdBound` callers should `try/finally { closeSync(fd) }` to prevent fd leak on validation-failure path. Note: GLM accepted the plan's "uncaughtException covers SIGTERM pre-import" rationale, which Codex correctly identified as incorrect — Codex's N1 stands.
+
+**\[opencode:deepseek-v4-pro r2\]:** ✅ **approve.** All 7 round-1 blockers `[RESOLVED]` with sound designs; no new blockers. Note: DeepSeek-Pro's argument that the SIGTERM pre-import window is "negligible because no lock has been acquired yet" is **incorrect** — the parent acquires the lock BEFORE spawn and ownership transfers around the `"spawn"` event, so during the supervisor's 5-50ms import window the lock IS held (by either parent or supervisor depending on timing). Codex's N1 stands; the round-3 revision adds the early inline SIGTERM handler.
+
+### Consolidated round-2 \[OPEN\] blockers
+
+| # | Source(s) | Resolution sketch |
+|---|---|---|
+| N1 | Codex, self-opus (GLM missed) | Phase 5a — register **inline SIGTERM/SIGINT handlers at the top of supervisor.mjs**, BEFORE dynamic imports. Use the same inline functions (`inlineLockDir`, `inlineJobPath`) the existing `uncaughtException` handler uses. Module-scope `let child = null` so the handler can `child.kill(signal)` if it's been spawned. Eliminates the 5-50ms pre-import window. |
+| N2 | Codex, self-opus | Phase 2 — clarify `openFdBound` semantics: returns `{fd, fstat, fdResolvedPath}` where `fdResolvedPath` is `realpathSync('/proc/self/fd/<fd>')` on Linux, `null` elsewhere. **Callers always run `isUnderAllowedDir(path)` (path-based)**; additionally on Linux, validate `fdResolvedPath` against allowed dir for fd-bound TOCTOU defense. macOS retains the existing path-based-only behavior + the prior symlink-swap TOCTOU known-limitation (plan-006 does NOT close it on macOS; F_GETPATH-based defense queued for plan-009+). |
+| Non-blocker (GLM, self-opus) | — | All `openFdBound` callers wrap fd usage in `try { ... } finally { closeSync(fd) }` to prevent fd leak on validation-failure path. |
+
+### Round 3 (post-N1-N2-fix) verdicts — TBD
 
 ## Code Review (4-way — to be filled in after implementation)
 
