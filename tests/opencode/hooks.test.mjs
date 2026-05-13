@@ -131,3 +131,41 @@ test("session-end reads cwd from stdin JSON", async () => {
     cleanup();
   }
 });
+
+// Plan-006 Phase 4 (H4): session hooks adopt fail-open ESM ordering.
+// A module-load failure (syntax error in jobs.mjs, missing module, etc.)
+// must NOT crash the hook with a non-zero exit — Claude Code's session
+// boot would interpret that as a broken plugin. The OPENCODE_BUDDY_TEST_THROW
+// =hookLoad seam simulates this scenario.
+test("session-start fails open on module-load failure (exits 0 with stderr message)", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    const result = await runHook(SESSION_START, {
+      CLAUDE_PROJECT_DIR: dir,
+      OPENCODE_BUDDY_TEST_THROW: "hookLoad",
+    });
+    assert.equal(result.code, 0, `expected fail-open exit 0; got ${result.code}; stderr: ${result.stderr}`);
+    assert.match(result.stderr, /session-start: module-load (failure|rejection) \(failing open\)/);
+    assert.match(result.stderr, /simulated module-load failure/);
+    // The orphan-detection prose must NOT appear on stdout — the hook
+    // failed open before reaching that logic.
+    assert.equal(result.stdout.trim(), "");
+  } finally {
+    cleanup();
+  }
+});
+
+test("session-end fails open on module-load failure (exits 0 with stderr message)", async () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    const result = await runHook(SESSION_END, {
+      CLAUDE_PROJECT_DIR: dir,
+      OPENCODE_BUDDY_TEST_THROW: "hookLoad",
+    });
+    assert.equal(result.code, 0, `expected fail-open exit 0; got ${result.code}; stderr: ${result.stderr}`);
+    assert.match(result.stderr, /session-end: module-load (failure|rejection) \(failing open\)/);
+    assert.match(result.stderr, /simulated module-load failure/);
+  } finally {
+    cleanup();
+  }
+});
