@@ -585,7 +585,20 @@ Plan-006 adds approximately **12-15 new tests** across 5 phases (revised after [
 
 Both `[OPEN]` items addressed in the round-2 commit alongside this verdict capture.
 
-### Round 2 (post-fix verdicts) — TBD after re-dispatch on the fixed branch
+### Round 2 (HEAD `0dec4f4`) — ✅ ALL FOUR APPROVE
+
+| # | Reviewer | Verdict |
+|---|---|---|
+| 1 | Self-Opus 4.7 | ✅ approve (carried from round-1) |
+| 2 | Codex | ✅ approve (carried from round-1) |
+| 3 | DeepSeek V4 Flash | ✅ approve — both `[OPEN]` items confirmed `[RESOLVED]`, no new issues |
+| 4 | GLM 5.1 | ✅ approve (carried from round-1) |
+
+**\[opencode:deepseek-v4-flash r2\]:** Both round-1 `[OPEN]` blockers resolved:
+- `[OPEN-1] RESOLVED` — `isUnderAllowedDir(taskFile)` call added at `buddy.mjs:303` before `readTaskFileFdBound`, matching the `parsePromptArgs:190` pattern. Error message uses path-based wording ("is not under") without "resolves to".
+- `[OPEN-2] RESOLVED` — stale macOS warning at old `buddy.mjs:894-900` replaced with a comment about the cross-platform TOCTOU window. Not misleading anymore.
+
+No new issues. **Plan-006 cleared for merge.**
 
 ## Post-execution report
 
