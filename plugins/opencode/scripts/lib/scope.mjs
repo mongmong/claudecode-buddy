@@ -1,6 +1,7 @@
-import { readFileSync, lstatSync } from "node:fs";
+import { readFileSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { runGit, gitRepoRoot } from "./git.mjs";
+import { openFdBound } from "./fd-bound.mjs";
 
 const MAX_UNTRACKED_BYTES = 1024 * 1024; // 1 MB
 const BINARY_SNIFF_BYTES = 8192;
@@ -77,41 +78,51 @@ export function resolveScope({ cwd, scope, base }) {
 }
 
 function readUntrackedAsDiff(cwd, paths) {
+  // Plan-006 Phase 2 (M1): fd-bound read closes the lstat→readFile TOCTOU
+  // window. openFdBound with nofollow:true raises ELOOP if the path is a
+  // symlink AT OPEN TIME — preserves the pre-fd-bound "reject any symlink"
+  // defense (the previous code's lstatSync(path) + isSymbolicLink() check
+  // had a race window before readFileSync(path)). On Linux + macOS, O_NOFOLLOW
+  // works at the kernel level. fstat on the fd is then used for isFile +
+  // size checks. The actual read happens via the same fd — inode-stable.
   let out = "";
   for (const path of paths) {
     const fullPath = join(cwd, path);
-    let stat;
+    let opened;
     try {
-      // Use lstatSync (not statSync) so symlinks don't cause us to read their
-      // targets — an untracked symlink like `leak -> ~/.ssh/config` would
-      // otherwise inline that external file into the prompt sent to opencode.
-      stat = lstatSync(fullPath);
-    } catch {
+      opened = openFdBound(fullPath, { nofollow: true });
+    } catch (err) {
+      if (err && err.code === "ELOOP") {
+        // Symlink. Same skip message + behavior as the pre-fd-bound code.
+        out += `\n# untracked: ${path} skipped (symlink)\n`;
+        continue;
+      }
+      // ENOENT, EACCES, etc. — skip silently as before.
       continue;
     }
-    if (stat.isSymbolicLink()) {
-      out += `\n# untracked: ${path} skipped (symlink)\n`;
-      continue;
-    }
-    if (!stat.isFile()) continue;
-    if (stat.size > MAX_UNTRACKED_BYTES) {
-      out += `\n# untracked: ${path} skipped (size ${stat.size} bytes exceeds 1 MB cap)\n`;
-      continue;
-    }
-    let buf;
     try {
-      buf = readFileSync(fullPath);
-    } catch {
-      continue;
-    }
-    if (looksBinary(buf)) {
-      out += `\n# untracked: ${path} skipped (binary)\n`;
-      continue;
-    }
-    const content = buf.toString("utf8");
-    out += `\n--- /dev/null\n+++ b/${path}\n`;
-    for (const line of content.split("\n")) {
-      out += `+${line}\n`;
+      if (!opened.fstat.isFile()) continue;
+      if (opened.fstat.size > MAX_UNTRACKED_BYTES) {
+        out += `\n# untracked: ${path} skipped (size ${opened.fstat.size} bytes exceeds 1 MB cap)\n`;
+        continue;
+      }
+      let buf;
+      try {
+        buf = readFileSync(opened.fd);
+      } catch {
+        continue;
+      }
+      if (looksBinary(buf)) {
+        out += `\n# untracked: ${path} skipped (binary)\n`;
+        continue;
+      }
+      const content = buf.toString("utf8");
+      out += `\n--- /dev/null\n+++ b/${path}\n`;
+      for (const line of content.split("\n")) {
+        out += `+${line}\n`;
+      }
+    } finally {
+      try { closeSync(opened.fd); } catch {}
     }
   }
   return out;

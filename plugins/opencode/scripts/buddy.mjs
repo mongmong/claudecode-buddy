@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
-import { openSync, closeSync, readFileSync, realpathSync } from "node:fs";
+import { closeSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { openFdBound } from "./lib/fd-bound.mjs";
 import { detectOpencode } from "./lib/cli-detection.mjs";
 import { detectConfig, defaultConfigPath } from "./lib/config-detection.mjs";
 import { loadConfig, updateConfig } from "./lib/config.mjs";
@@ -103,38 +104,47 @@ function isUnderAllowedDir(filePath) {
   return resolved === base || resolved.startsWith(base + "/");
 }
 
-function readTaskFileFdBound(path) {
-  let fd;
+// Plan-006 Phase 2: refactored to use the openFdBound primitive. Two
+// readers (`readTaskFileFdBound`, `readPromptFileFdBound`) share the same
+// open + read mechanics; they differ only in error-message labels.
+// On Linux, the fd-resolved-path is validated against the allowed dir
+// (closes H2 TOCTOU). On macOS, fdResolvedPath is null and we fall back
+// to path-based isUnderAllowedDir only — existing macOS known-limitation.
+function readFileFdBoundWithLabel(path, label) {
+  let opened;
   try {
-    fd = openSync(path, "r");
+    opened = openFdBound(path);
   } catch (err) {
-    return { ok: false, error: `failed to open task file ${path}: ${err.message}` };
+    return { ok: false, error: `failed to open ${label} file ${path}: ${err.message}` };
   }
   try {
-    let realPath;
-    try {
-      realPath = realpathSync(`/proc/self/fd/${fd}`);
-    } catch (err) {
-      return {
-        ok: false,
-        error:
-          `could not resolve fd path for ${path} (Linux /proc required): ${err.message}. ` +
-          `If on macOS, this defense is not yet implemented — plan 002 adds platform-specific support.`,
-      };
-    }
     const base = allowedPromptDir();
-    if (realPath !== base && !realPath.startsWith(base + "/")) {
-      return {
-        ok: false,
-        error:
-          `--task-file path \`${path}\` resolves to \`${realPath}\` which is not under the allowed prompt directory ` +
-          `(${base}). The subagent must write task files via mktemp inside $TMPDIR/opencode-prompts/.`,
-      };
+    // Always run path-based isUnderAllowedDir-equivalent on the fd-resolved
+    // path when available; on macOS, fall back to the caller's prior
+    // path-based check (already run before this function by isUnderAllowedDir).
+    if (opened.fdResolvedPath !== null) {
+      const realPath = opened.fdResolvedPath;
+      if (realPath !== base && !realPath.startsWith(base + "/")) {
+        return {
+          ok: false,
+          error:
+            `${label} path \`${path}\` resolves to \`${realPath}\` which is not under the allowed prompt directory ` +
+            `(${base}). The subagent must write files via mktemp inside $TMPDIR/opencode-prompts/.`,
+        };
+      }
     }
-    return { ok: true, value: readFileSync(fd, "utf8") };
+    return { ok: true, value: readFileSync(opened.fd, "utf8") };
   } finally {
-    closeSync(fd);
+    try { closeSync(opened.fd); } catch {}
   }
+}
+
+function readTaskFileFdBound(path) {
+  return readFileFdBoundWithLabel(path, "--task-file");
+}
+
+function readPromptFileFdBound(path) {
+  return readFileFdBoundWithLabel(path, "--prompt-file");
 }
 
 function parsePromptArgs(rawArgs) {
@@ -185,11 +195,15 @@ function parsePromptArgs(rawArgs) {
           `inside $TMPDIR/opencode-prompts/.`,
       };
     }
-    try {
-      return { ok: true, text: readFileSync(promptFile, "utf8"), model, variant };
-    } catch (err) {
-      return { ok: false, error: `failed to read prompt file ${promptFile}: ${err.message}` };
-    }
+    // Plan-006 Phase 2 (H2): fd-bound read closes the symlink-swap TOCTOU
+    // window between isUnderAllowedDir's realpathSync(path) above and the
+    // actual read. On Linux, readPromptFileFdBound also validates the
+    // fd-resolved-path against the allowed dir (defense in depth). On macOS,
+    // the fd-bound check is skipped; macOS retains the prior TOCTOU
+    // known-limitation (path-based check only).
+    const r = readPromptFileFdBound(promptFile);
+    if (!r.ok) return { ok: false, error: r.error };
+    return { ok: true, text: r.value, model, variant };
   }
 
   return { ok: true, text: positional.join(" "), model, variant };
