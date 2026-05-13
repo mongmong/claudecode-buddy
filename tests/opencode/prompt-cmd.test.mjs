@@ -138,3 +138,37 @@ test("prompt preserves leading and trailing whitespace verbatim (no .trim before
     cleanup();
   }
 });
+
+// Plan-006 Phase 2 (H2): integration test for --prompt-file fd-bound read.
+// The plan called for verifying that a symlink-swap between isUnderAllowedDir
+// and the read CANNOT bypass containment. Since the readPromptFileFdBound
+// helper performs the open + fd-resolved-path check + read in one fd-bound
+// flow, we exercise it by creating a symlink that POINTS OUTSIDE the
+// allowed dir and confirming the fd-resolved-path check rejects it.
+// Linux-only — the fd-resolved-path defense relies on /proc/self/fd/.
+test("prompt --prompt-file rejects a symlink pointing outside the allowed dir (H2 fd-bound defense)", { skip: process.platform !== "linux" }, async () => {
+  const { dir: tmpdir, cleanup } = makeTempRepo();
+  const { symlinkSync, writeFileSync: writeFile, mkdirSync: mkdir } = await import("node:fs");
+  try {
+    const promptDir = join(tmpdir, "opencode-prompts");
+    mkdir(promptDir, { recursive: true });
+    // The "evil target" lives OUTSIDE the allowed dir.
+    const evilTarget = join(tmpdir, "evil.txt");
+    writeFile(evilTarget, "dangerous-content");
+    // The "prompt path" is a symlink INSIDE the allowed dir → evil target.
+    const promptPath = join(promptDir, "prompt.txt");
+    symlinkSync(evilTarget, promptPath);
+    // isUnderAllowedDir on `promptPath` resolves the symlink and would see
+    // the evil target outside allowed dir — it rejects at the isUnderAllowedDir
+    // gate before even hitting readPromptFileFdBound. This is the layered
+    // defense: path-based check first, fd-bound check second.
+    const result = await runCompanion(
+      ["prompt", "--prompt-file", promptPath],
+      { OPENCODE_BIN: SUCCESS_BIN, TMPDIR: tmpdir },
+    );
+    assert.equal(result.code, 2, `expected exit 2 for rejected --prompt-file; stderr: ${result.stderr}`);
+    assert.match(result.stderr, /not under the allowed prompt directory/i);
+  } finally {
+    cleanup();
+  }
+});

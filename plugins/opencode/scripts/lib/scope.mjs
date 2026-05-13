@@ -1,6 +1,7 @@
-import { readFileSync, lstatSync } from "node:fs";
+import { readFileSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { runGit, gitRepoRoot } from "./git.mjs";
+import { openFdBound } from "./fd-bound.mjs";
 
 const MAX_UNTRACKED_BYTES = 1024 * 1024; // 1 MB
 const BINARY_SNIFF_BYTES = 8192;
@@ -32,7 +33,11 @@ function hasWorkingTreeChanges(cwd) {
 }
 
 function hasBranchDivergence(cwd, base) {
-  const r = runGit(cwd, ["diff", "--shortstat", `${base}...HEAD`]);
+  // --no-ext-diff + --no-textconv: defense-in-depth. Plan-006 H1.
+  // `--shortstat` alone bypasses diff.external today (git uses internal stat
+  // computation for stats), but the flags cost nothing and guard against any
+  // future git version / config combination that might invoke external drivers.
+  const r = runGit(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--shortstat", `${base}...HEAD`]);
   if (!r.ok) return false;
   return r.stdout.trim().length > 0;
 }
@@ -73,41 +78,51 @@ export function resolveScope({ cwd, scope, base }) {
 }
 
 function readUntrackedAsDiff(cwd, paths) {
+  // Plan-006 Phase 2 (M1): fd-bound read closes the lstat→readFile TOCTOU
+  // window. openFdBound with nofollow:true raises ELOOP if the path is a
+  // symlink AT OPEN TIME — preserves the pre-fd-bound "reject any symlink"
+  // defense (the previous code's lstatSync(path) + isSymbolicLink() check
+  // had a race window before readFileSync(path)). On Linux + macOS, O_NOFOLLOW
+  // works at the kernel level. fstat on the fd is then used for isFile +
+  // size checks. The actual read happens via the same fd — inode-stable.
   let out = "";
   for (const path of paths) {
     const fullPath = join(cwd, path);
-    let stat;
+    let opened;
     try {
-      // Use lstatSync (not statSync) so symlinks don't cause us to read their
-      // targets — an untracked symlink like `leak -> ~/.ssh/config` would
-      // otherwise inline that external file into the prompt sent to opencode.
-      stat = lstatSync(fullPath);
-    } catch {
+      opened = openFdBound(fullPath, { nofollow: true });
+    } catch (err) {
+      if (err && err.code === "ELOOP") {
+        // Symlink. Same skip message + behavior as the pre-fd-bound code.
+        out += `\n# untracked: ${path} skipped (symlink)\n`;
+        continue;
+      }
+      // ENOENT, EACCES, etc. — skip silently as before.
       continue;
     }
-    if (stat.isSymbolicLink()) {
-      out += `\n# untracked: ${path} skipped (symlink)\n`;
-      continue;
-    }
-    if (!stat.isFile()) continue;
-    if (stat.size > MAX_UNTRACKED_BYTES) {
-      out += `\n# untracked: ${path} skipped (size ${stat.size} bytes exceeds 1 MB cap)\n`;
-      continue;
-    }
-    let buf;
     try {
-      buf = readFileSync(fullPath);
-    } catch {
-      continue;
-    }
-    if (looksBinary(buf)) {
-      out += `\n# untracked: ${path} skipped (binary)\n`;
-      continue;
-    }
-    const content = buf.toString("utf8");
-    out += `\n--- /dev/null\n+++ b/${path}\n`;
-    for (const line of content.split("\n")) {
-      out += `+${line}\n`;
+      if (!opened.fstat.isFile()) continue;
+      if (opened.fstat.size > MAX_UNTRACKED_BYTES) {
+        out += `\n# untracked: ${path} skipped (size ${opened.fstat.size} bytes exceeds 1 MB cap)\n`;
+        continue;
+      }
+      let buf;
+      try {
+        buf = readFileSync(opened.fd);
+      } catch {
+        continue;
+      }
+      if (looksBinary(buf)) {
+        out += `\n# untracked: ${path} skipped (binary)\n`;
+        continue;
+      }
+      const content = buf.toString("utf8");
+      out += `\n--- /dev/null\n+++ b/${path}\n`;
+      for (const line of content.split("\n")) {
+        out += `+${line}\n`;
+      }
+    } finally {
+      try { closeSync(opened.fd); } catch {}
     }
   }
   return out;
@@ -121,13 +136,17 @@ export function getDiff({ cwd, scope, base }) {
     const resolvedBase = base ?? "main";
     const baseCheck = checkBase(cwd, resolvedBase);
     if (!baseCheck.ok) return baseCheck;
-    const r = runGit(cwd, ["diff", `${resolvedBase}...HEAD`]);
+    // --no-ext-diff + --no-textconv: closes RCE via diff.external (plan-006 H1).
+    // An untrusted repo's .git/config could otherwise execute arbitrary commands
+    // when /opencode:review runs `git diff` to build the prompt.
+    const r = runGit(cwd, ["diff", "--no-ext-diff", "--no-textconv", `${resolvedBase}...HEAD`]);
     if (!r.ok) return fail(r.error);
     return ok(r.stdout);
   }
   // working-tree
-  const staged = runGit(cwd, ["diff", "--cached"]);
-  const unstaged = runGit(cwd, ["diff"]);
+  // --no-ext-diff + --no-textconv: closes RCE via diff.external (plan-006 H1).
+  const staged = runGit(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--cached"]);
+  const unstaged = runGit(cwd, ["diff", "--no-ext-diff", "--no-textconv"]);
   const untrackedList = runGit(cwd, ["ls-files", "--others", "--exclude-standard"]);
   if (!staged.ok) return fail(staged.error);
   if (!unstaged.ok) return fail(unstaged.error);

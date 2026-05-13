@@ -35,6 +35,14 @@ if (!jobId || !projectDir || !binary || !cwd) {
 
 process.title = `buddy-supervisor:${jobId}`;
 
+// Module-scope state used by the signal handler. `child` is null until
+// spawn assigns it (later in the body); `dynamicImportsReady` flips true
+// after the await imports complete. The signal handler reads both, so
+// they must be at module scope.
+let child = null;
+let dynamicImportsReady = false;
+let signalHandled = false;
+
 // Inline derivations for the crash handler — duplicate sanitiseLabel /
 // sessionLockPath logic so we don't depend on dynamic imports that may not
 // have completed yet.
@@ -57,6 +65,54 @@ function inlineLockDir() {
 function inlineJobPath() {
   return joinPath(projectDir, ".claudecode-buddy", "opencode", "jobs", `${jobId}.json`);
 }
+
+// Plan-006 Phase 5a (H3, plus N1 from round-2 review): two-layer SIGTERM
+// handler. Registered AT THE TOP of the module so the pre-import window
+// (~5-50ms before dynamic imports resolve) is also covered — SIGTERM is a
+// signal, not a thrown exception, so the existing uncaughtException
+// handler does NOT cover signals.
+//
+// Pre-import branch: uses inline path-derivation + inline atomic JSON write
+// (same primitives the existing uncaughtException handler uses).
+// Post-import branch: uses the real releaseLock + updateJob from the
+// dynamic-imported modules. The `dynamicImportsReady` flag gates which
+// branch runs.
+function handleSignal(sig) {
+  if (signalHandled) return;
+  signalHandled = true;
+  try {
+    if (dynamicImportsReady) {
+      try { releaseLock(); } catch {}
+      try {
+        updateJob(projectDir, jobId, {
+          status: "cancelled",
+          finished_at: new Date().toISOString(),
+          exit_code: sig === "SIGINT" ? 130 : 143,
+        }, { expectedStatus: ["running", "session-ended"] });
+      } catch {}
+    } else {
+      // Dynamic imports haven't resolved yet — inline fallback.
+      try {
+        if (!degraded) rmSync(inlineLockDir(), { recursive: true, force: true });
+      } catch {}
+      try {
+        const jobPath = inlineJobPath();
+        const record = JSON.parse(readFileSync(jobPath, "utf8"));
+        record.status = "cancelled";
+        record.exit_code = sig === "SIGINT" ? 130 : 143;
+        record.finished_at = new Date().toISOString();
+        const tmp = `${jobPath}.tmp.${process.pid}.${Date.now()}`;
+        writeFileSync(tmp, JSON.stringify(record, null, 2) + "\n");
+        renameSync(tmp, jobPath);
+      } catch {}
+    }
+  } finally {
+    try { if (child && !child.killed) child.kill(sig); } catch {}
+    process.exit(sig === "SIGINT" ? 130 : 143);
+  }
+}
+process.on("SIGTERM", () => handleSignal("SIGTERM"));
+process.on("SIGINT",  () => handleSignal("SIGINT"));
 
 // SINGLE crash handler — does (a) lock release, (b) job-record-failed update
 // via inline atomic JSON write, (c) supervisor-error breadcrumb. The previous
@@ -92,11 +148,25 @@ process.on("uncaughtException", (err) => {
   process.exit(1);
 });
 
+// Plan-006 Phase 5a test seam: OPENCODE_BUDDY_TEST_SLOW_IMPORT_MS=N forces
+// a deterministic N-ms delay BEFORE dynamic imports complete so tests can
+// reliably exercise the pre-import SIGTERM branch.
+if (process.env.OPENCODE_BUDDY_TEST_SLOW_IMPORT_MS) {
+  const ms = parseInt(process.env.OPENCODE_BUDDY_TEST_SLOW_IMPORT_MS, 10);
+  if (Number.isFinite(ms) && ms > 0) {
+    await new Promise((r) => setTimeout(r, ms));
+  }
+}
+
 // Dynamic imports for own modules — now safe since the crash handler is
 // registered above.
 const { updateJob, jobsDir } = await import("./jobs.mjs");
 const { saveSessionId, deleteSessionId, sessionLockPath } = await import("./sessions.mjs");
 const { captureSessionIdFromStderr, captureLatestSessionForCwd } = await import("./session-capture.mjs");
+
+// Flip the flag AFTER imports resolve so the SIGTERM handler switches from
+// inline-fallback to the real releaseLock/updateJob path.
+dynamicImportsReady = true;
 
 const stdoutPath = joinPath(jobsDir(projectDir), `${jobId}.stdout`);
 const stderrPath = joinPath(jobsDir(projectDir), `${jobId}.stderr`);
@@ -117,7 +187,8 @@ function releaseLock() {
   } catch {}
 }
 
-let child;
+// `child` is module-scope (declared at the top so the SIGTERM handler can
+// read it); we just assign here.
 try {
   child = spawn(binary, opencodeArgs, { cwd, stdio: ["ignore", "pipe", "pipe"] });
 } catch (err) {

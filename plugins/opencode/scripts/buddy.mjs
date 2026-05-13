@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
-import { openSync, closeSync, readFileSync, realpathSync } from "node:fs";
+import { closeSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { openFdBound } from "./lib/fd-bound.mjs";
 import { detectOpencode } from "./lib/cli-detection.mjs";
 import { detectConfig, defaultConfigPath } from "./lib/config-detection.mjs";
 import { loadConfig, updateConfig } from "./lib/config.mjs";
@@ -23,6 +24,7 @@ import { extractTrailer } from "./lib/trailer.mjs";
 import { splitArgs } from "./lib/args.mjs";
 import { listModels } from "./lib/list-models.mjs";
 import { createJob, updateJob, listJobs, loadJob, jobsDir, jobPath, JOB_ID_RE } from "./lib/jobs.mjs";
+import { pidIsOurSupervisor as pidIsOurSupervisorExt } from "./lib/pid-identity.mjs";
 
 const VALID_SCOPES = new Set(["auto", "working-tree", "branch"]);
 const VALID_STYLES = new Set(["friendly", "adversarial"]);
@@ -103,38 +105,47 @@ function isUnderAllowedDir(filePath) {
   return resolved === base || resolved.startsWith(base + "/");
 }
 
-function readTaskFileFdBound(path) {
-  let fd;
+// Plan-006 Phase 2: refactored to use the openFdBound primitive. Two
+// readers (`readTaskFileFdBound`, `readPromptFileFdBound`) share the same
+// open + read mechanics; they differ only in error-message labels.
+// On Linux, the fd-resolved-path is validated against the allowed dir
+// (closes H2 TOCTOU). On macOS, fdResolvedPath is null and we fall back
+// to path-based isUnderAllowedDir only — existing macOS known-limitation.
+function readFileFdBoundWithLabel(path, label) {
+  let opened;
   try {
-    fd = openSync(path, "r");
+    opened = openFdBound(path);
   } catch (err) {
-    return { ok: false, error: `failed to open task file ${path}: ${err.message}` };
+    return { ok: false, error: `failed to open ${label} file ${path}: ${err.message}` };
   }
   try {
-    let realPath;
-    try {
-      realPath = realpathSync(`/proc/self/fd/${fd}`);
-    } catch (err) {
-      return {
-        ok: false,
-        error:
-          `could not resolve fd path for ${path} (Linux /proc required): ${err.message}. ` +
-          `If on macOS, this defense is not yet implemented — plan 002 adds platform-specific support.`,
-      };
-    }
     const base = allowedPromptDir();
-    if (realPath !== base && !realPath.startsWith(base + "/")) {
-      return {
-        ok: false,
-        error:
-          `--task-file path \`${path}\` resolves to \`${realPath}\` which is not under the allowed prompt directory ` +
-          `(${base}). The subagent must write task files via mktemp inside $TMPDIR/opencode-prompts/.`,
-      };
+    // Always run path-based isUnderAllowedDir-equivalent on the fd-resolved
+    // path when available; on macOS, fall back to the caller's prior
+    // path-based check (already run before this function by isUnderAllowedDir).
+    if (opened.fdResolvedPath !== null) {
+      const realPath = opened.fdResolvedPath;
+      if (realPath !== base && !realPath.startsWith(base + "/")) {
+        return {
+          ok: false,
+          error:
+            `${label} path \`${path}\` resolves to \`${realPath}\` which is not under the allowed prompt directory ` +
+            `(${base}). The subagent must write files via mktemp inside $TMPDIR/opencode-prompts/.`,
+        };
+      }
     }
-    return { ok: true, value: readFileSync(fd, "utf8") };
+    return { ok: true, value: readFileSync(opened.fd, "utf8") };
   } finally {
-    closeSync(fd);
+    try { closeSync(opened.fd); } catch {}
   }
+}
+
+function readTaskFileFdBound(path) {
+  return readFileFdBoundWithLabel(path, "--task-file");
+}
+
+function readPromptFileFdBound(path) {
+  return readFileFdBoundWithLabel(path, "--prompt-file");
 }
 
 function parsePromptArgs(rawArgs) {
@@ -185,11 +196,15 @@ function parsePromptArgs(rawArgs) {
           `inside $TMPDIR/opencode-prompts/.`,
       };
     }
-    try {
-      return { ok: true, text: readFileSync(promptFile, "utf8"), model, variant };
-    } catch (err) {
-      return { ok: false, error: `failed to read prompt file ${promptFile}: ${err.message}` };
-    }
+    // Plan-006 Phase 2 (H2): fd-bound read closes the symlink-swap TOCTOU
+    // window between isUnderAllowedDir's realpathSync(path) above and the
+    // actual read. On Linux, readPromptFileFdBound also validates the
+    // fd-resolved-path against the allowed dir (defense in depth). On macOS,
+    // the fd-bound check is skipped; macOS retains the prior TOCTOU
+    // known-limitation (path-based check only).
+    const r = readPromptFileFdBound(promptFile);
+    if (!r.ok) return { ok: false, error: r.error };
+    return { ok: true, text: r.value, model, variant };
   }
 
   return { ok: true, text: positional.join(" "), model, variant };
@@ -276,6 +291,24 @@ function parseRunArgs(rawArgs) {
     return { ok: false, error: "--reset and --no-session are mutually exclusive (reset is destructive; no-session is non-destructive)" };
   }
   if (taskFile !== null) {
+    // Plan-006 round-1 code-review fix (DeepSeek-Flash [OPEN-1]):
+    // Path-based containment check FIRST. Mirrors the parsePromptArgs:190
+    // pattern. Without this, macOS callers regressed in v0.5.1 because
+    // readTaskFileFdBound's Linux-only fd-bound check (via /proc/self/fd/)
+    // returns fdResolvedPath=null on macOS and skips the additional check,
+    // so any readable file would have been accepted. Pre-v0.5.1 the macOS
+    // path hard-failed with "Linux /proc required" — restoring containment
+    // here gets macOS back to safe behavior (path-based defense only;
+    // the fd-bound TOCTOU upgrade still applies to Linux as designed).
+    if (!isUnderAllowedDir(taskFile)) {
+      return {
+        ok: false,
+        error:
+          `--task-file path \`${taskFile}\` is not under the allowed prompt directory ` +
+          `(${allowedPromptDir()}). The subagent must write task files via mktemp ` +
+          `inside $TMPDIR/opencode-prompts/.`,
+      };
+    }
     const safeRead = readTaskFileFdBound(taskFile);
     if (!safeRead.ok) return { ok: false, error: safeRead.error };
     task = safeRead.value;
@@ -321,7 +354,10 @@ function emitTextWithOptionalVerdict(text) {
 
 function diffSummary(cwd) {
   try {
-    const unstaged = execFileSync("git", ["diff", "--stat"], {
+    // --no-ext-diff + --no-textconv: defense-in-depth. Plan-006 H1.
+    // `--stat` alone bypasses diff.external today, but the flags cost nothing
+    // and guard against future git/config combinations.
+    const unstaged = execFileSync("git", ["diff", "--no-ext-diff", "--no-textconv", "--stat"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -329,7 +365,7 @@ function diffSummary(cwd) {
     // Some opencode tasks `git add` files as part of their work. Include the
     // staged diff so the user sees the full set of changes, not just the
     // working tree.
-    const staged = execFileSync("git", ["diff", "--cached", "--stat"], {
+    const staged = execFileSync("git", ["diff", "--no-ext-diff", "--no-textconv", "--cached", "--stat"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -361,23 +397,18 @@ function isAlive(pid) {
 }
 
 function pidIsOurSupervisor(pid, jobId) {
-  if (!isAlive(pid)) return false;
-  if (process.platform !== "linux") {
-    // R2-4: best-effort on macOS / other.
-    return true;
-  }
-  try {
-    // The supervisor sets process.title = "buddy-supervisor:<jobId>". On Linux,
-    // process.title overwrites argv (via uv_set_process_title / PR_SET_NAME +
-    // argv overwrite), so /proc/<pid>/cmdline shows the title — both the
-    // "buddy-supervisor" prefix AND the jobId. Match BOTH substrings to defend
-    // against PID reuse: a recycled PID running an unrelated command with the
-    // jobId in its argv would NOT also have "buddy-supervisor".
-    const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
-    return cmdline.includes("buddy-supervisor") && cmdline.includes(jobId);
-  } catch {
-    return false;
-  }
+  // Plan-006 Phase 5 (C2 + M2): delegates to lib/pid-identity.mjs which
+  // accepts injectable {platform, cmdlineReader, isAlive} so Linux CI can
+  // exercise the macOS branch. The previous inline implementation returned
+  // `true` unconditionally on macOS — a recycled PID could cause cancel to
+  // SIGTERM an unrelated process. The extracted helper now runs the same
+  // cmdline check on darwin via `ps -o command=`, closing C2.
+  //
+  // Test seam: OPENCODE_BUDDY_TEST_PID_NEVER_OURS=1 forces the check to
+  // return false regardless. Used by tests that simulate the PID-reuse
+  // scenario in runCancel.
+  if (process.env.OPENCODE_BUDDY_TEST_PID_NEVER_OURS === "1") return false;
+  return pidIsOurSupervisorExt(pid, jobId);
 }
 
 function runSetup() {
@@ -416,6 +447,12 @@ function runModels() {
 }
 
 async function runReview(rawArgs) {
+  // Plan-006 Phase 3 (C1) test seam: lets the .catch() at the dispatch
+  // site be exercised by tests. Production users never hit this — the
+  // env var must exactly match a function name to fire.
+  if (process.env.OPENCODE_BUDDY_TEST_THROW === "runReview") {
+    throw new Error("OPENCODE_BUDDY_TEST_THROW=runReview simulated failure");
+  }
   const parsed = parseReviewArgs(rawArgs);
   if (!parsed.ok) {
     process.stderr.write(`${parsed.error}\n`);
@@ -489,6 +526,10 @@ async function runReview(rawArgs) {
 }
 
 async function runPrompt(rawArgs) {
+  // Plan-006 Phase 3 (C1) test seam — see runReview.
+  if (process.env.OPENCODE_BUDDY_TEST_THROW === "runPrompt") {
+    throw new Error("OPENCODE_BUDDY_TEST_THROW=runPrompt simulated failure");
+  }
   const input = parsePromptArgs(rawArgs);
   if (!input.ok) {
     process.stderr.write(`${input.error}\n`);
@@ -525,6 +566,10 @@ async function runPrompt(rawArgs) {
 }
 
 async function runRun(rawArgs) {
+  // Plan-006 Phase 3 (C1) test seam — see runReview.
+  if (process.env.OPENCODE_BUDDY_TEST_THROW === "runRun") {
+    throw new Error("OPENCODE_BUDDY_TEST_THROW=runRun simulated failure");
+  }
   const parsed = parseRunArgs(rawArgs);
   if (!parsed.ok) {
     process.stderr.write(`${parsed.error}\n`);
@@ -864,14 +909,13 @@ function runCancel(rawArgs) {
     );
     process.exit(0);
   }
-  if (process.platform !== "linux") {
-    process.stdout.write(
-      `WARNING: macOS cancel uses best-effort PID match (no /proc cmdline). ` +
-      `If pid ${job.pid} was recycled by an unrelated process since the supervisor ` +
-      `started, that unrelated process will receive SIGTERM. macOS-specific ` +
-      `verification via 'ps -o command=' is tracked for plan 002.\n`,
-    );
-  }
+  // Plan-006 Phase 5b closed the macOS PID-reuse gap via lib/pid-identity.mjs's
+  // `ps -o command= -p <pid>` check on darwin. By the time we reach this point,
+  // pidIsOurSupervisor (above) has verified cmdline on both Linux and macOS, so
+  // the previous "macOS uses best-effort PID match" warning would be wrong now.
+  // A microsecond TOCTOU window still exists between verification and the kill
+  // call below — common to all platforms — but it's strictly better than the
+  // pre-v0.5.1 macOS behavior.
   try { process.kill(-job.pgid, "SIGTERM"); } catch {}
   const escalator = spawn(
     process.execPath,
@@ -954,14 +998,29 @@ switch (subcommand) {
   case "models":
     runModels();
     break;
+  // Plan-006 Phase 3 (C1): top-level .catch() wrappers eliminate the
+  // unhandled-rejection footgun. Currently no path inside these runners
+  // throws (errors return {ok:false} + explicit process.exit), but any
+  // future refactor that introduces a throw would crash Node ≥15 with
+  // exit code 1 from unhandled rejection. The .catch() ensures we exit
+  // cleanly with code 2 + a clear error message instead.
   case "review":
-    runReview(rest);
+    runReview(rest).catch((err) => {
+      process.stderr.write(`unhandled error in review: ${err.stack ?? err.message ?? err}\n`);
+      process.exit(2);
+    });
     break;
   case "prompt":
-    runPrompt(rest);
+    runPrompt(rest).catch((err) => {
+      process.stderr.write(`unhandled error in prompt: ${err.stack ?? err.message ?? err}\n`);
+      process.exit(2);
+    });
     break;
   case "run":
-    runRun(rest);
+    runRun(rest).catch((err) => {
+      process.stderr.write(`unhandled error in run: ${err.stack ?? err.message ?? err}\n`);
+      process.exit(2);
+    });
     break;
   case "status":
     runStatus(rest);

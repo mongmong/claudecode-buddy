@@ -1,5 +1,12 @@
 #!/usr/bin/env node
-import { listJobs, updateJob } from "../scripts/lib/jobs.mjs";
+// Session-end hook: marks `running` jobs as `session-ended` so the next
+// SessionStart can detect them as orphans.
+//
+// Plan-006 Phase 4 (H4): adopts the same fail-open ESM ordering as
+// session-start.mjs and stop-review-gate-hook.mjs. Module-load failures
+// exit 0 (fail-open); runtime errors AFTER imports resolve still exit
+// with the appropriate non-zero code (e.g., updateJob failure stays at
+// exit 1 — that's intentional, not in scope for the fail-open semantics).
 import { readFileSync } from "node:fs";
 
 function readHookInput() {
@@ -9,6 +16,21 @@ function readHookInput() {
   } catch {}
   return null;
 }
+
+process.on("uncaughtException", (err) => {
+  process.stderr.write(`session-end: module-load failure (failing open): ${err.message ?? err}\n`);
+  process.exit(0);
+});
+process.on("unhandledRejection", (err) => {
+  process.stderr.write(`session-end: module-load rejection (failing open): ${err && err.message ? err.message : err}\n`);
+  process.exit(0);
+});
+
+if (process.env.OPENCODE_BUDDY_TEST_THROW === "hookLoad") {
+  throw new Error("OPENCODE_BUDDY_TEST_THROW=hookLoad simulated module-load failure");
+}
+
+const { listJobs, updateJob } = await import("../scripts/lib/jobs.mjs");
 
 const input = readHookInput();
 const projectDir =
