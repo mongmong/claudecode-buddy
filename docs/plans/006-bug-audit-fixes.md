@@ -571,12 +571,38 @@ Plan-006 adds approximately **12-15 new tests** across 5 phases (revised after [
 
 | Phase | Status | Commit |
 |---|---|---|
-| 1 — git --no-ext-diff (4 call sites) | TBD | — |
-| 2 — openFdBound primitive + prompt-file + scope.mjs | TBD | — |
-| 3 — top-level .catch + test-throw seam | TBD | — |
-| 4 — hooks fail-open ESM ordering | TBD | — |
-| 5 — cancel correctness (SIGTERM handler + injectable cmdline check + dynamic pid-identity in session-start) | TBD | — |
-| 6 — version bump + CHANGELOG + README + ship prep | TBD | — |
-| Plan review round 1 | ⚠️ needs-attention all 4 | `eb0ef03` |
-| Plan review round 2 (post-revision) | TBD | this commit |
+| 1 — git --no-ext-diff (6 call sites: scope.mjs:35/124/129/130 + buddy.mjs diffSummary unstaged/staged) | ✅ shipped | `c62669a` |
+| 2 — openFdBound primitive + prompt-file + scope.mjs (plus O_NOFOLLOW upgrade for symlink rejection) | ✅ shipped | `e9c464d` |
+| 3 — top-level .catch + OPENCODE_BUDDY_TEST_THROW seam | ✅ shipped | `7b720e0` |
+| 4 — hooks fail-open ESM ordering | ✅ shipped | `41a22c6` |
+| 5 — cancel correctness (two-layer SIGTERM + pid-identity helper + dynamic import in session-start + OPENCODE_BUDDY_TEST_SLOW_IMPORT_MS + OPENCODE_BUDDY_TEST_PID_NEVER_OURS seams) | ✅ shipped | `f1723ac` |
+| 6 — version bump + CHANGELOG + README + post-exec report | this commit | — |
+| Plan review round 1 | ⚠️ 4-of-4 needs-attention | `eb0ef03` |
+| Plan review round 2 | ⚠️ 2-of-4 needs-attention | `6585a0e` |
+| Plan review round 3 | ⚠️ 1-of-4 needs-attention | `961681d` |
+| Plan review round 4 (final) | ✅ 4-of-4 approve | `dd8804e` |
 | 4-way code review | TBD | — |
+
+### Test count history
+
+| After phase | Total | Pass | New |
+|---|---|---|---|
+| baseline (post-v0.5.0) | 257 | 254 | — |
+| Phase 1 (H1) | 259 | 256 | +2 |
+| Phase 2 (H2 + M1) | 268 | 265 | +9 |
+| Phase 3 (C1) | 272 | 269 | +4 |
+| Phase 4 (H4) | 274 | 271 | +2 |
+| Phase 5 (H3 + C2 + M2) | 286 | 283 | +12 |
+
+**Final: 286 tests / 283 pass / 3 e2e skipped / 0 fail. +29 new tests across plan-006.**
+
+### Plan deviations (documented in commit messages)
+
+- Phase 2: plan called for `openFdBound + fstat.isFile()` to reject symlinks, but
+  Node's `openSync` follows symlinks by default — so `fstat.isFile()` returns
+  true for the symlink TARGET, defeating the symlink-rejection intent. Added a
+  `nofollow` option to `openFdBound` (uses `O_NOFOLLOW`) which correctly rejects
+  symlinks at open time. `scope.mjs` uses `nofollow: true`; `prompt-file` /
+  `task-file` callers use the default (relying on fd-resolved-path containment).
+  Reviewers didn't catch this subtle issue across 4 plan-review rounds; surfaced
+  during implementation.

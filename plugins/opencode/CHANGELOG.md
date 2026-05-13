@@ -2,6 +2,119 @@
 
 All notable changes to the opencode plugin are documented here.
 
+## 0.5.1 — Critical-path safety fixes from 4-way bug audit (plan-006)
+
+Patch release covering the critical-path safety subset of findings from a 4-way
+repository bug audit (Codex + DeepSeek V4 Flash + GLM 5.1 + self-Opus 4.7) on
+v0.5.0. The audit returned 2 critical, 8 high, 10 medium, and 12+ low findings;
+plan-006 addresses the subset where the gap is exploitable, hits real users, or
+affects correctness rather than performance. The remaining findings are queued
+for plan-007 (correctness polish: H5, H6, H7, H8) and plan-008 (perf + drift
+hazards: M3-M10 + L1-L11).
+
+The plan passed a 4-round 4-way plan review before implementation, with all
+four reviewers concurring at HEAD `dd8804e`. Each implementation phase shipped
+as a separate commit with red-green-refactor TDD discipline.
+
+### Security / correctness fixes (8 findings closed)
+
+- **H1 (RCE) — `git diff` lacks `--no-ext-diff`.** All 6 git diff call sites
+  (4 in `scope.mjs` including `hasBranchDivergence` per DeepSeek-Pro [d1], 2
+  in `buddy.mjs:diffSummary`) now pass `--no-ext-diff --no-textconv`. Closes a
+  remote-code-execution vector: a malicious `.git/config`'s `diff.external`
+  driver could otherwise execute arbitrary commands when `/opencode:review`
+  runs `git diff` on an untrusted repo to build the prompt. Empirically:
+  plain `git diff` + `git diff --cached` were vulnerable; `--stat` +
+  `--shortstat` were not (git uses internal stat computation), but the flags
+  are added to all sites for defense in depth.
+
+- **H2 + M1 (file-read TOCTOU) — fd-bound `--prompt-file` + `scope.mjs`
+  untracked-file reads.** New `lib/fd-bound.mjs:openFdBound(path, {nofollow})`
+  primitive returns `{fd, fstat, fdResolvedPath}`. On Linux, callers validate
+  the fd-resolved path (via `/proc/self/fd/`) against the allowed dir,
+  closing the realpathSync→readFileSync TOCTOU window. macOS retains the
+  pre-existing path-based-only check (fdResolvedPath is null) — the macOS
+  symlink-swap TOCTOU known-limitation is documented for plan-009+
+  (F_GETPATH-based defense via native binding). `scope.mjs:readUntrackedAsDiff`
+  uses `nofollow: true` so O_NOFOLLOW rejects symlinks at the kernel level,
+  preserving the prior 'reject any symlink' semantics without the
+  lstat-then-read race window.
+
+- **C1 (defensive) — `.catch()` on top-level async dispatches.** The three
+  top-level dispatches in `buddy.mjs` (review/prompt/run) now wrap their
+  async runners in `.catch()` that logs a labeled stderr message and exits
+  with code 2. Closes a latent footgun where any future refactor introducing
+  a `throw` in a runner would crash Node ≥15 with an unhandled-rejection
+  exit code 1 instead of a clean labeled exit.
+
+- **H3 (cancel strands lock) — two-layer SIGTERM handler in supervisor.mjs.**
+  Pre-Phase-5, supervisor had no SIGTERM handler — cancel's SIGTERM exited
+  the supervisor without releasing the lock, so every cancelled background
+  job blocked future dispatches for that `(key, role, model)` tuple. The new
+  handler is registered AT THE TOP of supervisor.mjs (round-2 N1 resolution
+  — SIGTERM is a signal, not a thrown exception; uncaughtException doesn't
+  cover signals). A `dynamicImportsReady` flag gates two cleanup branches:
+  the pre-import branch uses inline path-derivation + inline atomic JSON
+  write (same primitives the existing uncaughtException handler uses); the
+  post-import branch uses the real `releaseLock` + `updateJob`.
+
+- **C2 (macOS PID-reuse cancel) — extracted pid-identity helper.** New
+  `lib/pid-identity.mjs:pidIsOurSupervisor(pid, jobId, opts)` accepts
+  injectable `{platform, cmdlineReader, isAlive}`. The macOS branch uses
+  `ps -o command= -p <pid>` instead of returning `true` unconditionally,
+  closing the gap where a recycled PID could be SIGTERM'd by cancel. The
+  injection seam lets Linux CI verify the macOS branch via canned ps output.
+
+- **M2 (orphan PID-reuse) — session-start orphan detection uses
+  pidIsOurSupervisor.** The hook dynamic-imports the helper (preserves
+  Phase 4 fail-open ESM ordering) and uses it in the orphan filter. A PID
+  that's alive but isn't OUR supervisor is now correctly classified as
+  orphan instead of being trusted as 'still our supervisor running.'
+
+- **H4 (hooks fail closed) — session-start + session-end ESM ordering.**
+  Both hooks now match `stop-review-gate-hook.mjs`'s pattern: static
+  `node:*` imports → register fail-open `uncaughtException` +
+  `unhandledRejection` handlers → dynamic `await import()` of own modules.
+  ESM-load failures (syntax error, missing module, etc.) exit 0 with a
+  stderr message instead of crashing the hook with a non-zero code that
+  Claude Code might interpret as a broken plugin. Runtime errors AFTER
+  imports resolve still exit with their actual code — fail-open applies
+  to module-load failures only.
+
+### Test seams added (production-safe, documented)
+
+The following env-var seams enable deterministic testing of defensive code
+paths. Each has exact-match-only activation and is documented as test-only in
+the plugin README:
+
+- `OPENCODE_BUDDY_TEST_THROW=runReview|runPrompt|runRun|hookLoad` —
+  triggers a throw at the top of the matching runner / hook block.
+- `OPENCODE_BUDDY_TEST_SLOW_IMPORT_MS=N` — forces an N-ms delay before
+  supervisor.mjs's dynamic imports resolve, exercising the pre-import
+  SIGTERM-handler branch.
+- `OPENCODE_BUDDY_TEST_PID_NEVER_OURS=1` — forces `pidIsOurSupervisor`
+  to return false regardless of platform, simulating PID-reuse for tests.
+
+### Test counts
+
+- v0.5.0 baseline: 257 tests (254 pass + 3 e2e skipped).
+- v0.5.1 adds: 29 tests across 6 phases.
+- v0.5.1: **283 tests pass** out of 286 total, 3 e2e skipped, 0 fail.
+
+### Deferred to future plans
+
+| Audit ID | Severity | Deferred to |
+|---|---|---|
+| H5 — job-state CAS TOCTOU | high | plan-007 (proper `flock(2)`) |
+| H6 — lock-handoff window between spawn() and "spawn" event | high | plan-007 |
+| H7 — 33 sites exit 0 on failure | high | plan-007a (exit-code propagation audit) |
+| H8 — timeout kills only direct child | high | plan-007 (process-group rework) |
+| M3-M10 | medium | plan-008 (quality-of-life + perf) |
+| L1-L11 | low | plan-008+ polish |
+
+Per the H7 deferral framing: pre-existing pain continues across the 33
+sites that exit 0 on failure; plan-006 does NOT make this worse.
+
 ## 0.5.0 — `--variant` reasoning-effort flag + opencode binary auto-discovery
 
 ### Added
