@@ -433,6 +433,12 @@ function runModels() {
 }
 
 async function runReview(rawArgs) {
+  // Plan-006 Phase 3 (C1) test seam: lets the .catch() at the dispatch
+  // site be exercised by tests. Production users never hit this — the
+  // env var must exactly match a function name to fire.
+  if (process.env.OPENCODE_BUDDY_TEST_THROW === "runReview") {
+    throw new Error("OPENCODE_BUDDY_TEST_THROW=runReview simulated failure");
+  }
   const parsed = parseReviewArgs(rawArgs);
   if (!parsed.ok) {
     process.stderr.write(`${parsed.error}\n`);
@@ -506,6 +512,10 @@ async function runReview(rawArgs) {
 }
 
 async function runPrompt(rawArgs) {
+  // Plan-006 Phase 3 (C1) test seam — see runReview.
+  if (process.env.OPENCODE_BUDDY_TEST_THROW === "runPrompt") {
+    throw new Error("OPENCODE_BUDDY_TEST_THROW=runPrompt simulated failure");
+  }
   const input = parsePromptArgs(rawArgs);
   if (!input.ok) {
     process.stderr.write(`${input.error}\n`);
@@ -542,6 +552,10 @@ async function runPrompt(rawArgs) {
 }
 
 async function runRun(rawArgs) {
+  // Plan-006 Phase 3 (C1) test seam — see runReview.
+  if (process.env.OPENCODE_BUDDY_TEST_THROW === "runRun") {
+    throw new Error("OPENCODE_BUDDY_TEST_THROW=runRun simulated failure");
+  }
   const parsed = parseRunArgs(rawArgs);
   if (!parsed.ok) {
     process.stderr.write(`${parsed.error}\n`);
@@ -971,14 +985,29 @@ switch (subcommand) {
   case "models":
     runModels();
     break;
+  // Plan-006 Phase 3 (C1): top-level .catch() wrappers eliminate the
+  // unhandled-rejection footgun. Currently no path inside these runners
+  // throws (errors return {ok:false} + explicit process.exit), but any
+  // future refactor that introduces a throw would crash Node ≥15 with
+  // exit code 1 from unhandled rejection. The .catch() ensures we exit
+  // cleanly with code 2 + a clear error message instead.
   case "review":
-    runReview(rest);
+    runReview(rest).catch((err) => {
+      process.stderr.write(`unhandled error in review: ${err.stack ?? err.message ?? err}\n`);
+      process.exit(2);
+    });
     break;
   case "prompt":
-    runPrompt(rest);
+    runPrompt(rest).catch((err) => {
+      process.stderr.write(`unhandled error in prompt: ${err.stack ?? err.message ?? err}\n`);
+      process.exit(2);
+    });
     break;
   case "run":
-    runRun(rest);
+    runRun(rest).catch((err) => {
+      process.stderr.write(`unhandled error in run: ${err.stack ?? err.message ?? err}\n`);
+      process.exit(2);
+    });
     break;
   case "status":
     runStatus(rest);
