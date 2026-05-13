@@ -291,6 +291,24 @@ function parseRunArgs(rawArgs) {
     return { ok: false, error: "--reset and --no-session are mutually exclusive (reset is destructive; no-session is non-destructive)" };
   }
   if (taskFile !== null) {
+    // Plan-006 round-1 code-review fix (DeepSeek-Flash [OPEN-1]):
+    // Path-based containment check FIRST. Mirrors the parsePromptArgs:190
+    // pattern. Without this, macOS callers regressed in v0.5.1 because
+    // readTaskFileFdBound's Linux-only fd-bound check (via /proc/self/fd/)
+    // returns fdResolvedPath=null on macOS and skips the additional check,
+    // so any readable file would have been accepted. Pre-v0.5.1 the macOS
+    // path hard-failed with "Linux /proc required" — restoring containment
+    // here gets macOS back to safe behavior (path-based defense only;
+    // the fd-bound TOCTOU upgrade still applies to Linux as designed).
+    if (!isUnderAllowedDir(taskFile)) {
+      return {
+        ok: false,
+        error:
+          `--task-file path \`${taskFile}\` is not under the allowed prompt directory ` +
+          `(${allowedPromptDir()}). The subagent must write task files via mktemp ` +
+          `inside $TMPDIR/opencode-prompts/.`,
+      };
+    }
     const safeRead = readTaskFileFdBound(taskFile);
     if (!safeRead.ok) return { ok: false, error: safeRead.error };
     task = safeRead.value;
@@ -891,14 +909,13 @@ function runCancel(rawArgs) {
     );
     process.exit(0);
   }
-  if (process.platform !== "linux") {
-    process.stdout.write(
-      `WARNING: macOS cancel uses best-effort PID match (no /proc cmdline). ` +
-      `If pid ${job.pid} was recycled by an unrelated process since the supervisor ` +
-      `started, that unrelated process will receive SIGTERM. macOS-specific ` +
-      `verification via 'ps -o command=' is tracked for plan 002.\n`,
-    );
-  }
+  // Plan-006 Phase 5b closed the macOS PID-reuse gap via lib/pid-identity.mjs's
+  // `ps -o command= -p <pid>` check on darwin. By the time we reach this point,
+  // pidIsOurSupervisor (above) has verified cmdline on both Linux and macOS, so
+  // the previous "macOS uses best-effort PID match" warning would be wrong now.
+  // A microsecond TOCTOU window still exists between verification and the kill
+  // call below — common to all platforms — but it's strictly better than the
+  // pre-v0.5.1 macOS behavior.
   try { process.kill(-job.pgid, "SIGTERM"); } catch {}
   const escalator = spawn(
     process.execPath,

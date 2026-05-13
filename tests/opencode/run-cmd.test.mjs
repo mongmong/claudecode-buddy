@@ -151,6 +151,42 @@ test("run --task-file rejects paths OUTSIDE the allowed dir", async () => {
   }
 });
 
+// Plan-006 round-1 code-review fix (DeepSeek-Flash [OPEN-1]): the
+// --task-file containment regression on macOS. parseRunArgs now calls
+// isUnderAllowedDir(taskFile) BEFORE readTaskFileFdBound, so rejection
+// happens at the path-based layer regardless of platform. This test
+// asserts the error message originates from the path-based check
+// (parseRunArgs:294) NOT from the fd-bound check (readFileFdBoundWithLabel
+// at buddy.mjs:127). The two messages differ:
+//   - path-based (parseRunArgs):  "path `X` is not under the allowed prompt directory"
+//   - fd-bound (readFileFdBound): "path `X` resolves to `Y` which is not under..."
+// Matching against "is not under" (with no "resolves to") proves the
+// path-based layer fired first.
+test("run --task-file containment check is path-based (fires before fd-bound; survives macOS where fdResolvedPath is null)", async () => {
+  const { dir: tmpdir, cleanup } = makeTempRepo();
+  try {
+    const sneakyPath = join(tmpdir, "sneaky.txt");
+    writeFileSync(sneakyPath, "would leak");
+    const { dir: repoDir, cleanup: repoCleanup } = makeTempRepo();
+    try {
+      setupRepo(repoDir);
+      const result = await runCompanion(
+        ["run", "--task-file", sneakyPath],
+        { OPENCODE_BIN: RUN_OK_BIN, OPENCODE_REPO_ROOT: repoDir, CLAUDE_PROJECT_DIR: repoDir, TMPDIR: tmpdir, OPENCODE_BUDDY_FORCE_INTERACTIVE: "1" },
+      );
+      assert.notEqual(result.code, 0);
+      // Path-based message: "path \`X\` is not under" with no "resolves to".
+      assert.match(result.stderr, /path .* is not under the allowed prompt directory/i);
+      assert.doesNotMatch(result.stderr, /resolves to/i,
+        "expected path-based rejection (no fd-bound 'resolves to'); the path-based check should fire first regardless of platform");
+    } finally {
+      repoCleanup();
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("run refuses without --yolo in non-interactive context", async () => {
   const { dir, cleanup } = makeTempRepo();
   try {

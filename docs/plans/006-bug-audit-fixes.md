@@ -556,14 +556,36 @@ Plan-006 adds approximately **12-15 new tests** across 5 phases (revised after [
 
 **Plan-006 cleared for implementation.** Per CLAUDE.md, all four concur — implementation proceeds on this branch starting with Phase 1.
 
-## Code Review (4-way — to be filled in after implementation)
+## Code Review (4-way)
+
+### Round 1 (HEAD `5b0f34b`)
 
 | # | Reviewer | Verdict |
 |---|---|---|
-| 1 | Self-review (Opus 4.7) | TBD |
-| 2 | Codex via `codex:codex-rescue` subagent | TBD |
-| 3 | DeepSeek V4 Flash via opencode bash escape hatch | TBD |
-| 4 | GLM 5.1 via opencode bash escape hatch | TBD |
+| 1 | Self-Opus 4.7 | ✅ approve (no blockers; 2 minor confirmations) |
+| 2 | Codex via `codex:codex-rescue` subagent | ✅ approve (no blockers; sandbox couldn't run tests independently) |
+| 3 | DeepSeek V4 Flash via bash | ⚠️ needs-attention — 2 `[OPEN]` blockers (saved the merge!) |
+| 4 | GLM 5.1 via bash | ✅ approve (no blockers; verified all 5 focus areas) |
+
+**\[self-opus\]:** Confirmed via grep that `releaseLock` is a function declaration (hoisted, so the SIGTERM handler at line 85 can call it though defined at 180). Single-threaded Node event loop makes `dynamicImportsReady` boundary race-free. All 3 test seams use the `OPENCODE_BUDDY_TEST_` prefix convention consistently. ✅
+
+**\[codex\]:** All 5 focus areas (correctness, assumptions, consistency, test coverage, doc drift) clean. Confirmed: two-layer SIGTERM safe; O_NOFOLLOW maps to `O_RDONLY | O_NOFOLLOW` correctly; test seams are exact-match-only; all openFdBound callers close in finally; pid-identity fails closed on darwin ps errors; supervisor module-scope state initialized correctly across all paths including spawn() failure. ✅
+
+**\[opencode:glm-5.1\]:** Detailed analysis of the two-layer SIGTERM handler (no race at flag boundary; signalHandled prevents re-entry); O_NOFOLLOW POSIX semantics identical Linux+macOS; test seams namespaced with `OPENCODE_BUDDY_TEST_` prefix; `.catch` stderr labels don't collide with existing test parsing; all 3 fd callers wrap in try/finally closeSync; pid-identity execFileSync throw → false (safe deny); supervisor spawn-failure path correctly leaves `child === null` so signal handler's `if (child && !child.killed)` short-circuits. ✅
+
+**\[opencode:deepseek-v4-flash\]:** Caught **2 real `[OPEN]` blockers** that the other 3 reviewers missed — both Phase 5 / Phase 2 regressions:
+
+- **\[OPEN-1\]** `parseRunArgs` lost macOS `--task-file` containment at `buddy.mjs:294`. `parsePromptArgs:190` calls `isUnderAllowedDir(promptFile)` BEFORE `readPromptFileFdBound`, but `parseRunArgs:294` calls `readTaskFileFdBound(taskFile)` directly — no path-based containment. On Linux, the fd-resolved-path check inside `readFileFdBoundWithLabel` saves us. On macOS, `fdResolvedPath === null` skips the fd-bound check, and the file is read unconditionally. Pre-v0.5.1, macOS hard-failed with "Linux /proc required" — Phase 2's refactor accidentally removed this hard-fail and made macOS silently accept any readable file.
+
+  **Fix:** add `if (!isUnderAllowedDir(taskFile)) return { ok: false, error: ... }` at `buddy.mjs:293`, matching the `parsePromptArgs:190` pattern.
+
+- **\[OPEN-2\]** `runCancel:894-900` stale macOS warning contradicts the Phase 5b fix. The message says "macOS cancel uses best-effort PID match (no /proc cmdline)... macOS-specific verification via 'ps -o command=' is tracked for plan 002." Phase 5b just shipped that verification via `lib/pid-identity.mjs`. The warning is now misinformation.
+
+  **Fix:** remove the warning block; replace with a comment noting the cross-platform TOCTOU window between verification and kill.
+
+Both `[OPEN]` items addressed in the round-2 commit alongside this verdict capture.
+
+### Round 2 (post-fix verdicts) — TBD after re-dispatch on the fixed branch
 
 ## Post-execution report
 
