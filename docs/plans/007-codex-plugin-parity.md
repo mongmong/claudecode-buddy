@@ -49,9 +49,9 @@ Both CLIs wrap an LLM. The dispatch shape is structurally the same (spawn → ca
 
 - **`/codex:review` AND `/codex:run` both invoke `codex exec --json`** for parseable output. The native `codex review` subcommand is NOT on the plugin's invoke path because `codex review --json` doesn't exist (only `codex exec --json` does — confirmed via `codex review --help`). The plugin sends the diff + a review-prompt-template through `codex exec --json` for reviews; treats codex as a generic exec target.
 - `--yolo` translates to `--dangerously-bypass-approvals-and-sandbox` (maps to `--sandbox danger-full-access`).
-- **Default sandbox is conditional on Phase 1.5 gate R9-d.** If `--sandbox workspace-write` prompts per write (parity with opencode's "honors permission prompts" default), `/codex:run` default is `workspace-write`. If it's silent-allow (no per-operation prompts — semantic gap with opencode), `/codex:run` default is `read-only` and `--yolo` (`danger-full-access`) becomes mandatory for writes. The conservative default is read-only; the gate decides. Documented in CHANGELOG.
+- **Default sandbox (per Phase 1.5 gate 4 — silent-allow confirmed):** `/codex:run` default is `--sandbox read-only`. `--yolo` maps to `--sandbox workspace-write` (cwd-confined writes). Users can override to `danger-full-access` explicitly via `--sandbox danger-full-access` (no shorthand). `/codex:review` always uses `--sandbox read-only`. Preserves opencode's "user consent before writes" property.
 - `--variant <level>` translates to `-c model_reasoning_effort=<level>`. Free-form pass-through (codex validates the value; plugin doesn't).
-- **Session continuity is conditional on Phase 1.5 gates R9-b/c.** If both pass, stored UUIDs go in `<project>/.claudecode-buddy/codex/sessions/<key>-<role>-<model>.session-id` and resume uses `codex exec resume <UUID> [PROMPT]`. If R9-b fails (no capturable UUID) → Phase 4 fully descoped. If R9-c fails (resume doesn't accept positional prompt) → Phase 4 lands storage but no actual resume.
+- **Session continuity (per Phase 1.5 gates 2 + 3 — both PASS):** `thread.started` event's `thread_id` (UUID) captured from FIRST stdout line; stored in `<project>/.claudecode-buddy/codex/sessions/<key>-<role>-<model>.session-id`. Resume via `codex exec resume <UUID> [PROMPT]` with sandbox flag passed as `-c sandbox.mode=<mode>` (top-level `--sandbox` flag NOT accepted by `resume` subcommand).
 - Binary auto-discovery: scan `~/.codex/bin/codex` first, then `~/.local/bin/codex`, `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`, `/usr/bin/codex`. Same `accessSync(X_OK)` gating.
 
 ## Code-sharing strategy
@@ -148,15 +148,40 @@ Test count target: ~280 (matching opencode's 284).
 
 **Decision point:** if ALL gates PASS, proceed to Phase 2. If 1+ fails with REVISE, update the affected phases in this plan and re-dispatch the 4-way plan review on the revised plan. If a gate fails with DESCOPE, narrow scope (e.g., drop Phase 4 session continuity) and re-dispatch reviewers on the narrowed plan.
 
-### Phase 1.5 Results
+### Phase 1.5 Results (executed 2026-05-12; see `~/.cache/claudecode-buddy/scratch/phase1.5/`)
 
-(Populated during Phase 1.5 execution.)
+**Gate (1) `codex exec --json` event shape — ✅ PASS.**
+Tested: `codex exec --json --skip-git-repo-check --sandbox read-only "Reply ok"`. Output shape (NDJSON, one event per line):
+```jsonl
+{"type":"thread.started","thread_id":"019e1fee-3cd2-7dd0-a28f-5d10fb3f3f99"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}
+{"type":"turn.completed","usage":{...}}
+```
+Codex events differ from opencode's (`type: "text"` with nested `part.text`). The plugin's `lib/invoke.mjs` codex-specific parser extracts assistant text from:
+`event.type === "item.completed" && event.item.type === "agent_message"` → `event.item.text`.
+Additional event types (`file_change`, `command_execution`, etc.) appear for write-capable runs but follow the same `item.completed` shape.
 
-- Gate (1) `codex exec --json` event shape — TBD
-- Gate (2) Session UUID capture path — TBD
-- Gate (3) `codex exec resume <UUID> [PROMPT]` prompt-accept — TBD
-- Gate (4) `--sandbox workspace-write` write-prompt behavior — TBD
-- Gate (5) Two-plugin namespace collision behavior (via `/plugin list`) — TBD
+**Gate (2) Session UUID capture — ✅ PASS (best-case path).**
+The `thread.started` event is emitted as the **FIRST stdout line** with a UUID `thread_id`. No stderr regex needed (cleaner than opencode's `service=session id=ses_*` stderr pattern). Plugin's session-capture: parse the first NDJSON line, extract `thread_id`, persist to `<project>/.claudecode-buddy/codex/sessions/<key>-<role>-<model>.session-id`.
+
+**Gate (3) `codex exec resume <UUID> [PROMPT]` — ✅ PASS with caveat.**
+Tested: `codex exec resume --json --skip-git-repo-check <prior-uuid> "Reply: yes"`. Resume accepts positional prompt; model received and replied; `thread.started` event echoes the **same `thread_id`** confirming continuity. **Caveat:** `--sandbox` flag is NOT accepted on `resume` subcommand (`error: unexpected argument '--sandbox' found`). Workaround: use `-c sandbox.mode=<mode>` (codex config override flag) to flow sandbox config through resume. Plugin's `review-dispatch.mjs` accommodates: top-level exec uses `--sandbox`; resume uses `-c sandbox.mode=...`.
+
+**Gate (4) `--sandbox workspace-write` write behavior — ✅ PASS with R11 decision.**
+Tested: `codex exec --json --sandbox workspace-write "write 'test' to gate4-test.txt"`. **Result: silent-allow** — file written immediately, no prompt, no approval step. Codex `workspace-write` is more permissive than opencode's "honors permission prompts" default.
+**R11 decision (final):** `/codex:run` default is **`--sandbox read-only`**. `--yolo` maps to `--sandbox workspace-write` (cwd-confined writes). No path to `danger-full-access` without explicit user override via `--sandbox danger-full-access`. This preserves the "user must consent before writes" property in parity with opencode's default.
+
+**Gate (5) Two-plugin namespace collision behavior — ⏳ DEFERRED to user verification.**
+Requires Claude Code interaction (install both plugins, observe `/plugin list`). Cannot test from bash since plugin install/uninstall is a slash-command operation. Per RR3 + RR7, the **conservative uninstall-first migration policy stays canonical** regardless of the gate's verdict — uninstall openai-codex before installing claudecode-buddy/codex avoids the question entirely.
+
+### Phase 1.5 verdict: 🟢 GO
+
+**4 of 5 gates PASS, 1 deferred (non-blocking).** Plan-007 proceeds with the full v0.5.1-parity scope. **No descopes triggered.** Specific plan implications now grounded in reality:
+- Phase 2's `lib/invoke.mjs` parses `item.completed` events with nested `agent_message` text.
+- Phase 2's session-capture path is the first-line `thread.started` UUID extraction (simpler than the planned stderr-or-output-last-message scan).
+- Phase 4's session resume is `codex exec resume <UUID> [PROMPT]` with sandbox via `-c sandbox.mode=...`.
+- Phase 3's `/codex:run` defaults to `--sandbox read-only`; `--yolo` → `workspace-write`.
 
 ### Phase 2 — `/codex:review` + `codex:codex-review` subagent + read-only path
 
@@ -204,14 +229,12 @@ Test count target: ~280 (matching opencode's 284).
 
 **Depends on:** Phase 2 (invoke.mjs event-shape parser) + Phase 3 (jobs.mjs + lock primitive in sessions.mjs).
 
-**Conditional execution (per Phase 1.5 gate R9-b/c):** if Phase 1.5 confirms that (a) codex emits the session UUID where we can capture it AND (b) `codex exec resume <UUID> [PROMPT]` accepts a positional prompt, Phase 4 proceeds as planned. If EITHER fails:
-- (a)-fail: descope Phase 4 entirely — session continuity is unavailable for codex; users get fresh sessions every dispatch. Add a `## Known limitations` entry in CHANGELOG.
-- (b)-fail: Phase 4 lands `sessions.mjs` storage but `review-dispatch.mjs` doesn't actually resume; the stored UUID is informational only.
+**Conditional execution:** ✅ Phase 1.5 gates 2 + 3 both PASS — Phase 4 proceeds as planned (full happy path; no descopes).
 
-**Files (port; assumes happy path):**
-- `plugins/codex/scripts/lib/sessions.mjs` — **NOT byte-identical** to opencode's (R1: `SESSION_ID_RE` differs — UUID vs `ses_*` regex; path hardcodes `"codex"`). Otherwise identical body.
-- `plugins/codex/scripts/lib/session-capture.mjs` — codex-specific session-id extraction. Implementation depends on Phase 1.5 gate R9-b finding (stderr / stdout / output-last-message file).
-- `plugins/codex/scripts/lib/review-dispatch.mjs` — port the dispatch + session-id resolve logic. Adapts the resume-invocation shape (`codex exec resume <UUID> [PROMPT]` if R9-c passes).
+**Files:**
+- `plugins/codex/scripts/lib/sessions.mjs` — **NOT byte-identical** to opencode's (R1: `SESSION_ID_RE` is UUID `/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i` vs `ses_*`; path hardcodes `"codex"`). Otherwise identical body.
+- `plugins/codex/scripts/lib/session-capture.mjs` — extract the first stdout NDJSON line, parse JSON, return `event.thread_id` if `event.type === "thread.started"` (per Phase 1.5 gate 2 finding).
+- `plugins/codex/scripts/lib/review-dispatch.mjs` — resume-invocation is `codex exec resume <UUID> [PROMPT]`. Sandbox config flows through `-c sandbox.mode=<mode>` not `--sandbox` (per Phase 1.5 gate 3 caveat).
 - Update: `commands/{review,run}.md` to wire `--session-key`, `--reset`, `--no-session`.
 
 ### Phase 5 — `--style adversarial` + Stop-hook gate
@@ -220,11 +243,7 @@ Test count target: ~280 (matching opencode's 284).
 
 **Depends on:** Phase 2 (invoke.mjs) + Phase 4 (review-dispatch.mjs, for the gate's review invocation).
 
-**Cascading descope (per round-2 RR8):**
-The two sub-features of Phase 5 have **different dependencies** and degrade independently:
-- **`--style adversarial`** only depends on Phase 2's `invoke.mjs` path. Survives any Phase 4 descope.
-- **Stop-hook gate** depends on Phase 4's `review-dispatch.mjs` for the review invocation at Stop time. If Phase 4 is FULLY descoped (Phase 1.5 gate R9-b failure — no capturable session UUID), the Stop-hook gate is ALSO descoped: `commands/gate.md` body says `## Known limitations — Stop-hook gate unavailable; codex lacks capturable session UUIDs.` `/codex:gate on` returns a clear error. The hook script `scripts/stop-review-gate-hook.mjs` is created but immediately exits 0 (no-op fail-open).
-- If Phase 4 is PARTIALLY descoped (R9-c failure — sessions stored but no actual resume), Phase 5's gate still works because it doesn't rely on the resume mechanism — it just invokes a one-shot `codex exec --json` per Stop event.
+**Cascading descope:** ✅ NOT TRIGGERED — Phase 1.5 gates 2 + 3 both PASS, Phase 4 ships fully, Phase 5 ships fully (both `--style adversarial` and Stop-hook gate).
 
 **Files (port):**
 - `plugins/codex/scripts/stop-review-gate-hook.mjs` — fail-open ESM ordering from day 1 (carry plan-006 Phase 4 forward).
@@ -315,13 +334,13 @@ Post-plan-007:
 6. Activate: `/plugin marketplace update claudecode-buddy && /reload-plugins`.
 
 Same `/codex:review`, `/codex:run`, `/codex:rescue`, `codex:codex-rescue` (aliased to `codex-review`) commands work.
-**New features (subset conditional on Phase 1.5 gate outcomes):**
-- `/codex:gate`, `/codex:status`, `/codex:result`, `/codex:cancel` — always available.
-- `--variant <level>` (reasoning effort) — always available.
-- `--style adversarial` — always available.
-- **Session continuity** — available if Phase 1.5 gates R9-b/c both PASS. If either fails, the plugin documents the limitation in CHANGELOG and `/codex:review` / `/codex:run` run fresh sessions every time.
-- **Stop-hook review gate** — available unless Phase 4 is fully descoped (R9-b failure cascades to Phase 5 per RR8).
-- fd-bound TOCTOU defense, fail-open hooks, RCE defenses — always available (CLI-agnostic).
+**New features (Phase 1.5 verified — all available in v0.5.1):**
+- `/codex:gate`, `/codex:status`, `/codex:result`, `/codex:cancel`.
+- `--variant <level>` (reasoning effort, maps to `-c model_reasoning_effort=<level>`).
+- `--style adversarial`.
+- Session continuity (per `(plan-or-branch, role, model)` tuple; thread_id UUID captured + reused).
+- Stop-hook review gate (opt-in via `/codex:gate on`).
+- fd-bound TOCTOU defense, fail-open hooks, RCE defenses (`--no-ext-diff` everywhere).
 
 **On namespace collision behavior:** Phase 1.5 gate (5) empirically verifies what Claude Code does when two plugins both claim `/codex:*`. Regardless of the verdict ("last-installed wins" vs "error on ambiguity" vs "first-registered wins"), the conservative **uninstall-first migration step above** stays canonical — it avoids the question entirely.
 
