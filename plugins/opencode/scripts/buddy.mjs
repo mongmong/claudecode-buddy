@@ -24,6 +24,7 @@ import { extractTrailer } from "./lib/trailer.mjs";
 import { splitArgs } from "./lib/args.mjs";
 import { listModels } from "./lib/list-models.mjs";
 import { createJob, updateJob, listJobs, loadJob, jobsDir, jobPath, JOB_ID_RE } from "./lib/jobs.mjs";
+import { pidIsOurSupervisor as pidIsOurSupervisorExt } from "./lib/pid-identity.mjs";
 
 const VALID_SCOPES = new Set(["auto", "working-tree", "branch"]);
 const VALID_STYLES = new Set(["friendly", "adversarial"]);
@@ -378,23 +379,18 @@ function isAlive(pid) {
 }
 
 function pidIsOurSupervisor(pid, jobId) {
-  if (!isAlive(pid)) return false;
-  if (process.platform !== "linux") {
-    // R2-4: best-effort on macOS / other.
-    return true;
-  }
-  try {
-    // The supervisor sets process.title = "buddy-supervisor:<jobId>". On Linux,
-    // process.title overwrites argv (via uv_set_process_title / PR_SET_NAME +
-    // argv overwrite), so /proc/<pid>/cmdline shows the title — both the
-    // "buddy-supervisor" prefix AND the jobId. Match BOTH substrings to defend
-    // against PID reuse: a recycled PID running an unrelated command with the
-    // jobId in its argv would NOT also have "buddy-supervisor".
-    const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
-    return cmdline.includes("buddy-supervisor") && cmdline.includes(jobId);
-  } catch {
-    return false;
-  }
+  // Plan-006 Phase 5 (C2 + M2): delegates to lib/pid-identity.mjs which
+  // accepts injectable {platform, cmdlineReader, isAlive} so Linux CI can
+  // exercise the macOS branch. The previous inline implementation returned
+  // `true` unconditionally on macOS — a recycled PID could cause cancel to
+  // SIGTERM an unrelated process. The extracted helper now runs the same
+  // cmdline check on darwin via `ps -o command=`, closing C2.
+  //
+  // Test seam: OPENCODE_BUDDY_TEST_PID_NEVER_OURS=1 forces the check to
+  // return false regardless. Used by tests that simulate the PID-reuse
+  // scenario in runCancel.
+  if (process.env.OPENCODE_BUDDY_TEST_PID_NEVER_OURS === "1") return false;
+  return pidIsOurSupervisorExt(pid, jobId);
 }
 
 function runSetup() {

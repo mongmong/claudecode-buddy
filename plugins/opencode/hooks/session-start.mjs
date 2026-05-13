@@ -13,11 +13,6 @@
 //      code — fail-open applies to ESM-load failures only, not normal flow.
 import { readFileSync } from "node:fs";
 
-function isAlive(pid) {
-  if (!pid) return false;
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
-
 function readHookInput() {
   try {
     const raw = readFileSync(0, "utf8");
@@ -45,6 +40,9 @@ if (process.env.OPENCODE_BUDDY_TEST_THROW === "hookLoad") {
 }
 
 const { listJobs } = await import("../scripts/lib/jobs.mjs");
+// Plan-006 Phase 5c (M2): dynamic-import the pid-identity helper so a
+// load failure here also fails open per Phase 4's ESM ordering.
+const { pidIsOurSupervisor } = await import("../scripts/lib/pid-identity.mjs");
 
 const input = readHookInput();
 const projectDir =
@@ -55,9 +53,14 @@ const projectDir =
 const list = listJobs(projectDir);
 if (!list.ok) process.exit(0);
 
+// Plan-006 Phase 5c (M2): the orphan filter now uses pidIsOurSupervisor
+// (cmdline + jobId check) instead of bare isAlive. A PID that's alive
+// but isn't OUR supervisor (PID reuse → some other process inherited
+// the recycled pid) is correctly classified as an orphan. Previously
+// any live PID was trusted as "still our supervisor running."
 const orphans = list.value.filter((j) => {
   if (j.status === "session-ended") return true;
-  if (j.status === "running" && !isAlive(j.pid)) return true;
+  if (j.status === "running" && !pidIsOurSupervisor(j.pid, j.id)) return true;
   return false;
 });
 
