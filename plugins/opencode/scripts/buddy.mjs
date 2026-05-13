@@ -321,7 +321,10 @@ function emitTextWithOptionalVerdict(text) {
 
 function diffSummary(cwd) {
   try {
-    const unstaged = execFileSync("git", ["diff", "--stat"], {
+    // --no-ext-diff + --no-textconv: defense-in-depth. Plan-006 H1.
+    // `--stat` alone bypasses diff.external today, but the flags cost nothing
+    // and guard against future git/config combinations.
+    const unstaged = execFileSync("git", ["diff", "--no-ext-diff", "--no-textconv", "--stat"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -329,7 +332,7 @@ function diffSummary(cwd) {
     // Some opencode tasks `git add` files as part of their work. Include the
     // staged diff so the user sees the full set of changes, not just the
     // working tree.
-    const staged = execFileSync("git", ["diff", "--cached", "--stat"], {
+    const staged = execFileSync("git", ["diff", "--no-ext-diff", "--no-textconv", "--cached", "--stat"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],

@@ -226,3 +226,51 @@ test("getDiff returns an error when git fails (e.g., bad base ref)", () => {
     cleanup();
   }
 });
+
+// Plan-006 Phase 1 (H1): closes RCE-via-`diff.external` on untrusted repos.
+// Without --no-ext-diff, a repo's diff.external config can execute arbitrary
+// commands when `/opencode:review` runs `git diff` to build the prompt.
+// Setting diff.external=/bin/false makes git abort the diff with an error;
+// the test passes only if the fix forces git to ignore external diff drivers.
+test("getDiff (working-tree) survives diff.external=/bin/false — H1 RCE defense", () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    initRepo(dir);
+    // First create + commit a file so we have something to diff against.
+    writeFileSync(join(dir, "tracked.txt"), "original\n");
+    git(dir, "add", "tracked.txt");
+    git(dir, "commit", "-q", "-m", "add tracked");
+    // Now configure a malicious external diff driver that just fails.
+    git(dir, "config", "diff.external", "/bin/false");
+    // Modify the tracked file so there's something to diff.
+    writeFileSync(join(dir, "tracked.txt"), "modified\n");
+    const result = getDiff({ cwd: dir, scope: "working-tree", base: "main" });
+    assert.equal(result.ok, true, `expected getDiff to succeed despite diff.external=/bin/false; got error: ${result.error}`);
+    assert.match(result.value, /modified/, `expected diff to contain the modification; got: ${JSON.stringify(result.value.slice(0, 200))}`);
+  } finally {
+    cleanup();
+  }
+});
+
+test("resolveScope auto (hasBranchDivergence) survives diff.external=/bin/false — H1 RCE defense", () => {
+  const { dir, cleanup } = makeTempRepo();
+  try {
+    initRepo(dir);
+    // Same setup — commit one file, then a divergent feature branch commit.
+    writeFileSync(join(dir, "tracked.txt"), "original\n");
+    git(dir, "add", "tracked.txt");
+    git(dir, "commit", "-q", "-m", "init main");
+    git(dir, "checkout", "-q", "-b", "feature");
+    writeFileSync(join(dir, "feature.txt"), "feature\n");
+    git(dir, "add", "feature.txt");
+    git(dir, "commit", "-q", "-m", "feature commit");
+    // Configure malicious external diff driver.
+    git(dir, "config", "diff.external", "/bin/false");
+    // hasBranchDivergence runs `git diff --shortstat base...HEAD`; auto-scope probes this.
+    const resolved = resolveScope({ cwd: dir, scope: "auto", base: "main" });
+    assert.equal(resolved.ok, true, `expected resolveScope auto to succeed; got: ${resolved.error}`);
+    assert.equal(resolved.value.scope, "branch", "expected branch scope (divergent feature branch with clean tree)");
+  } finally {
+    cleanup();
+  }
+});

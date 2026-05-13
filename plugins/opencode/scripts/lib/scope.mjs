@@ -32,7 +32,11 @@ function hasWorkingTreeChanges(cwd) {
 }
 
 function hasBranchDivergence(cwd, base) {
-  const r = runGit(cwd, ["diff", "--shortstat", `${base}...HEAD`]);
+  // --no-ext-diff + --no-textconv: defense-in-depth. Plan-006 H1.
+  // `--shortstat` alone bypasses diff.external today (git uses internal stat
+  // computation for stats), but the flags cost nothing and guard against any
+  // future git version / config combination that might invoke external drivers.
+  const r = runGit(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--shortstat", `${base}...HEAD`]);
   if (!r.ok) return false;
   return r.stdout.trim().length > 0;
 }
@@ -121,13 +125,17 @@ export function getDiff({ cwd, scope, base }) {
     const resolvedBase = base ?? "main";
     const baseCheck = checkBase(cwd, resolvedBase);
     if (!baseCheck.ok) return baseCheck;
-    const r = runGit(cwd, ["diff", `${resolvedBase}...HEAD`]);
+    // --no-ext-diff + --no-textconv: closes RCE via diff.external (plan-006 H1).
+    // An untrusted repo's .git/config could otherwise execute arbitrary commands
+    // when /opencode:review runs `git diff` to build the prompt.
+    const r = runGit(cwd, ["diff", "--no-ext-diff", "--no-textconv", `${resolvedBase}...HEAD`]);
     if (!r.ok) return fail(r.error);
     return ok(r.stdout);
   }
   // working-tree
-  const staged = runGit(cwd, ["diff", "--cached"]);
-  const unstaged = runGit(cwd, ["diff"]);
+  // --no-ext-diff + --no-textconv: closes RCE via diff.external (plan-006 H1).
+  const staged = runGit(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--cached"]);
+  const unstaged = runGit(cwd, ["diff", "--no-ext-diff", "--no-textconv"]);
   const untrackedList = runGit(cwd, ["ls-files", "--others", "--exclude-standard"]);
   if (!staged.ok) return fail(staged.error);
   if (!unstaged.ok) return fail(unstaged.error);
