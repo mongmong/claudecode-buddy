@@ -45,13 +45,13 @@ Both CLIs wrap an LLM. The dispatch shape is structurally the same (spawn → ca
 | Branch base for review | (prompt template) | `--base <BRANCH>` (native flag) |
 | Common install path | `~/.opencode/bin/opencode` | `~/.codex/bin/codex` (per `codex update`'s default) |
 
-**Mapping decisions:**
+**Mapping decisions (revised after round-2 RR1 + RR2):**
 
-- `/codex:review` uses `codex review --base <ref> [PROMPT]` (uses native review subcommand). Falls back to `codex exec` with a review prompt if `--scope working-tree` is selected (codex review doesn't have working-tree-vs-branch flag the same way; we adapt).
-- `/codex:run` uses `codex exec [PROMPT]` for foreground; `codex exec --json --output-last-message <FILE>` for background (to capture parseable events + final text).
-- `--yolo` translates to `--dangerously-bypass-approvals-and-sandbox`. Default (`--yolo` absent) uses `--sandbox workspace-write` (parity with opencode's "honors permission prompts but allows write access" default).
-- `--variant <level>` translates to `-c model_reasoning_effort=<level>`. Free-form pass-through (codex validates).
-- Session continuity: stored UUIDs go in the same `<project>/.claudecode-buddy/codex/sessions/<key>-<role>-<model>.session-id` file (analog of opencode's). Resume uses `codex exec resume <UUID>` subcommand.
+- **`/codex:review` AND `/codex:run` both invoke `codex exec --json`** for parseable output. The native `codex review` subcommand is NOT on the plugin's invoke path because `codex review --json` doesn't exist (only `codex exec --json` does — confirmed via `codex review --help`). The plugin sends the diff + a review-prompt-template through `codex exec --json` for reviews; treats codex as a generic exec target.
+- `--yolo` translates to `--dangerously-bypass-approvals-and-sandbox` (maps to `--sandbox danger-full-access`).
+- **Default sandbox is conditional on Phase 1.5 gate R9-d.** If `--sandbox workspace-write` prompts per write (parity with opencode's "honors permission prompts" default), `/codex:run` default is `workspace-write`. If it's silent-allow (no per-operation prompts — semantic gap with opencode), `/codex:run` default is `read-only` and `--yolo` (`danger-full-access`) becomes mandatory for writes. The conservative default is read-only; the gate decides. Documented in CHANGELOG.
+- `--variant <level>` translates to `-c model_reasoning_effort=<level>`. Free-form pass-through (codex validates the value; plugin doesn't).
+- **Session continuity is conditional on Phase 1.5 gates R9-b/c.** If both pass, stored UUIDs go in `<project>/.claudecode-buddy/codex/sessions/<key>-<role>-<model>.session-id` and resume uses `codex exec resume <UUID> [PROMPT]`. If R9-b fails (no capturable UUID) → Phase 4 fully descoped. If R9-c fails (resume doesn't accept positional prompt) → Phase 4 lands storage but no actual resume.
 - Binary auto-discovery: scan `~/.codex/bin/codex` first, then `~/.local/bin/codex`, `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`, `/usr/bin/codex`. Same `accessSync(X_OK)` gating.
 
 ## Code-sharing strategy
@@ -142,11 +142,21 @@ Test count target: ~280 (matching opencode's 284).
 
 4. **`codex exec --sandbox workspace-write "echo > test.txt"`** — does it prompt before writing? **R9-(d) + R11:** if `workspace-write` is silent-allow (no per-write prompt), the default `/codex:run` sandbox becomes `read-only` and `--yolo` becomes the only path to writes (mapping to `danger-full-access`). Document the decision in CHANGELOG.
 
-5. **Install both openai-codex and a stub claudecode-buddy/codex plugin simultaneously; run `/codex:setup`.** Observe which plugin's command runs. **R7:** if Claude Code errors on collision OR ignores the newer plugin, migration guide is "uninstall openai-codex FIRST." If it's last-installed-wins, the migration is gentler. Either way, the conservative wording stays as the canonical instruction.
+5. **Install both openai-codex and a stub claudecode-buddy/codex plugin simultaneously; check resolution via `/plugin list`.** Observe how Claude Code displays the namespace collision (both registered, one shadowed, error reported, etc.). **R7 + RR7:** do NOT invoke `/codex:setup` for this test — Phase 1 only ships stubs and a working setup body doesn't land until Phase 2. `/plugin list` is enough to see the resolver's behavior on conflicting registrations. If Claude Code errors on collision OR ignores the newer plugin, migration guide stays "uninstall openai-codex FIRST" (the canonical instruction). If it's last-installed-wins, soft-allow installs alongside while keeping the conservative wording as the default recommendation.
 
-**Output format:** each verification gets a subsection in this plan with: command run, stdout/stderr/exit-code summary, plan-impact verdict (PASS / REVISE / DESCOPE).
+**Output format:** each verification gets a subsection in **### Phase 1.5 Results** below with: command run, stdout/stderr/exit-code summary, plan-impact verdict (PASS / REVISE / DESCOPE).
 
 **Decision point:** if ALL gates PASS, proceed to Phase 2. If 1+ fails with REVISE, update the affected phases in this plan and re-dispatch the 4-way plan review on the revised plan. If a gate fails with DESCOPE, narrow scope (e.g., drop Phase 4 session continuity) and re-dispatch reviewers on the narrowed plan.
+
+### Phase 1.5 Results
+
+(Populated during Phase 1.5 execution.)
+
+- Gate (1) `codex exec --json` event shape — TBD
+- Gate (2) Session UUID capture path — TBD
+- Gate (3) `codex exec resume <UUID> [PROMPT]` prompt-accept — TBD
+- Gate (4) `--sandbox workspace-write` write-prompt behavior — TBD
+- Gate (5) Two-plugin namespace collision behavior (via `/plugin list`) — TBD
 
 ### Phase 2 — `/codex:review` + `codex:codex-review` subagent + read-only path
 
@@ -177,15 +187,16 @@ Test count target: ~280 (matching opencode's 284).
 
 **Depends on:** Phase 2 (lib/invoke.mjs, the dispatcher shape).
 
-**Files:**
+**Files (revised after round-2 RR6 + RR9):**
 - `plugins/codex/scripts/lib/supervisor.mjs` — ports plan-006 Phase 5a two-layer SIGTERM handler from day 1. **NOT byte-identical** to opencode's — codex-specific child-spawn argv (`codex exec` not `opencode run`) and session-id-capture-from-stderr logic.
 - `plugins/codex/scripts/lib/jobs.mjs` — **NOT byte-identical** to opencode's (R1: `jobsDir()` hardcodes `"opencode"` path; codex copy hardcodes `"codex"`). Otherwise identical body.
-- `plugins/codex/scripts/lib/git.mjs` — port. May be byte-identical (CLI-agnostic git wrapper) — verify in Phase 8 sync test.
+- **`plugins/codex/scripts/lib/pid-identity.mjs` — byte-identical port** (RR6: was missing from any phase's file list — added here alongside `jobs.mjs` and `supervisor.mjs` which depend on it). Same as opencode's per the byte-identical table.
+- `plugins/codex/scripts/lib/git.mjs` — port. **RR9**: treated as a standard CLI-specific port. Not in the byte-identical table; structurally identical body but the `runGit` invocation surface may diverge if codex-specific git options need adding later.
 - `plugins/codex/commands/run.md` — full body.
 - `plugins/codex/commands/{status,result,cancel}.md` — full bodies.
 - `plugins/codex/agents/codex-run.md` — full body.
 - **R11**: per Phase 1.5 sandbox verification, the `/codex:run` default sandbox is decided here. If `workspace-write` is silent-allow, default is `read-only` and `--yolo` is required for writes (mapping to `danger-full-access`). If `workspace-write` prompts per write, default is `workspace-write` (parity with opencode).
-- Tests: `tests/codex/{run-cmd,jobs,status-cmd,result-cmd,cancel-cmd,supervisor}.test.mjs`.
+- Tests: `tests/codex/{run-cmd,jobs,status-cmd,result-cmd,cancel-cmd,supervisor,pid-identity}.test.mjs`.
 
 ### Phase 4 — Session continuity (per `(plan-or-branch, role, model)` tuple)
 
@@ -209,11 +220,17 @@ Test count target: ~280 (matching opencode's 284).
 
 **Depends on:** Phase 2 (invoke.mjs) + Phase 4 (review-dispatch.mjs, for the gate's review invocation).
 
+**Cascading descope (per round-2 RR8):**
+The two sub-features of Phase 5 have **different dependencies** and degrade independently:
+- **`--style adversarial`** only depends on Phase 2's `invoke.mjs` path. Survives any Phase 4 descope.
+- **Stop-hook gate** depends on Phase 4's `review-dispatch.mjs` for the review invocation at Stop time. If Phase 4 is FULLY descoped (Phase 1.5 gate R9-b failure — no capturable session UUID), the Stop-hook gate is ALSO descoped: `commands/gate.md` body says `## Known limitations — Stop-hook gate unavailable; codex lacks capturable session UUIDs.` `/codex:gate on` returns a clear error. The hook script `scripts/stop-review-gate-hook.mjs` is created but immediately exits 0 (no-op fail-open).
+- If Phase 4 is PARTIALLY descoped (R9-c failure — sessions stored but no actual resume), Phase 5's gate still works because it doesn't rely on the resume mechanism — it just invokes a one-shot `codex exec --json` per Stop event.
+
 **Files (port):**
 - `plugins/codex/scripts/stop-review-gate-hook.mjs` — fail-open ESM ordering from day 1 (carry plan-006 Phase 4 forward).
 - `plugins/codex/prompts/adversarial-review.md` — port.
-- `plugins/codex/prompts/stop-review-gate.md` — port.
-- `plugins/codex/commands/gate.md` — port.
+- `plugins/codex/prompts/stop-review-gate.md` — port (only if Phase 5 gate sub-feature is in scope).
+- `plugins/codex/commands/gate.md` — port (body conditional on Phase 1.5 outcomes per RR8 above).
 - Update: `review.md` to add `--style` flag.
 
 ### Phase 6 — `--variant` flag + binary auto-discovery
@@ -283,26 +300,38 @@ Phase 7 produces no new files; it produces a **verification-results.md** sub-doc
 - **End-to-end:** opt-in via `CODEX_E2E=1` (parity with `OPENCODE_E2E=1`).
 - **Test count target:** ~280 codex-side + the existing 287 opencode-side ≈ 570 total.
 
-## Migration story for users
+## Migration story for users (revised after round-2 RR3 + RR4 + RR10)
 
 Pre-plan-007:
 1. Install openai-codex marketplace: `/plugin marketplace add openai/codex-plugin-cc`.
 2. Install codex plugin: `/plugin install codex@openai-codex`.
 
 Post-plan-007:
-1. (Optional but recommended) Uninstall openai-codex: `/plugin uninstall codex@openai-codex; /plugin marketplace remove openai-codex`.
-2. Install codex from claudecode-buddy: `/plugin install codex@claudecode-buddy` (the marketplace is already registered if the user installed opencode this way).
-3. Same `/codex:review`, `/codex:run`, `codex:codex-rescue` (now aliased to `codex-review`) commands work. New: `/codex:gate`, `/codex:status`, `/codex:result`, `/codex:cancel`, `--variant`, `--style adversarial`, session continuity, fd-bound TOCTOU, fail-open hooks, etc.
+1. **(REQUIRED)** Uninstall openai-codex first to avoid namespace collision: `/plugin uninstall codex@openai-codex`.
+2. **(Optional cleanup)** `/plugin marketplace remove openai-codex`.
+3. **(Optional)** Recover any background-job output from openai-codex: `/codex:result <id>` against the OLD plugin BEFORE uninstalling. **openai-codex's persisted job and session state DO NOT migrate** — they remain in their original data dir (e.g., `~/.claude/plugins/data/codex-openai-codex/` if present).
+4. Register the claudecode-buddy marketplace if not already (it may already be registered if the user installed opencode this way): `/plugin marketplace add mongmong/claudecode-buddy`.
+5. Install the new codex plugin: `/plugin install codex@claudecode-buddy`.
+6. Activate: `/plugin marketplace update claudecode-buddy && /reload-plugins`.
 
-If both plugins are installed simultaneously, Claude Code's plugin resolver will prefer the most-recently-installed (last-one-wins). The user can verify via `/plugin list` showing both `codex@openai-codex` and `codex@claudecode-buddy`.
+Same `/codex:review`, `/codex:run`, `/codex:rescue`, `codex:codex-rescue` (aliased to `codex-review`) commands work.
+**New features (subset conditional on Phase 1.5 gate outcomes):**
+- `/codex:gate`, `/codex:status`, `/codex:result`, `/codex:cancel` — always available.
+- `--variant <level>` (reasoning effort) — always available.
+- `--style adversarial` — always available.
+- **Session continuity** — available if Phase 1.5 gates R9-b/c both PASS. If either fails, the plugin documents the limitation in CHANGELOG and `/codex:review` / `/codex:run` run fresh sessions every time.
+- **Stop-hook review gate** — available unless Phase 4 is fully descoped (R9-b failure cascades to Phase 5 per RR8).
+- fd-bound TOCTOU defense, fail-open hooks, RCE defenses — always available (CLI-agnostic).
 
-## Risks + open questions
+**On namespace collision behavior:** Phase 1.5 gate (5) empirically verifies what Claude Code does when two plugins both claim `/codex:*`. Regardless of the verdict ("last-installed wins" vs "error on ambiguity" vs "first-registered wins"), the conservative **uninstall-first migration step above** stays canonical — it avoids the question entirely.
 
-- **Codex CLI's session-id format and resume semantics.** Codex stores session files on disk (per `--ephemeral` opt-out flag). The exact session-id capture path needs verification — does `codex exec --json` emit the session UUID in stdout/stderr the way opencode emits `service=session id=ses_<id>` in stderr? Phase 2 implementation must establish this empirically.
-- **Codex JSONL event shape.** opencode emits `{type: "text", part: {type: "text", text: "..."}}`. Codex's `--json` shape needs reverse-engineering during Phase 2.
-- **Sandbox-level defaults.** Codex's `--sandbox workspace-write` is the closest analog to opencode's "honors permission prompts" default. Codex's `read-only` is review-mode-only. The plugin's `/codex:run` (without `--yolo`) should default to `workspace-write`; `/codex:review` defaults to `read-only`. Confirm during Phase 2.
-- **TOML config writes.** Phase 2's `config.mjs` needs to write TOML preserving comments. The opencode equivalent writes JSON which has no comment problem. Either use a TOML library (new npm dep — workspace currently has none, opencode is dep-free) or restrict config writes to non-destructive edits (append-only or specific-key replacement).
-- **Backward compatibility for `codex:codex-rescue`.** The CLAUDE.md references this name extensively. The plan aliases `codex-rescue.md` to `codex-review` so existing references continue to resolve. After publish, gradually migrate CLAUDE.md text + reviewer-dispatch prompts to `codex-review` for terminology consistency with `opencode:opencode-review`.
+## Risks + open questions (revised after round-2 RR5)
+
+- **Codex CLI session-id capture + resume semantics.** All risks here moved to **Phase 1.5 gates R9-b and R9-c** with PASS/REVISE/DESCOPE verdicts. Pre-implementation empirical verification, not post-hoc risk.
+- **Codex JSONL event shape.** Moved to **Phase 1.5 gate (1)**. Implementation deferred until verified.
+- **Sandbox-level defaults.** Moved to **Phase 1.5 gate R9-d** + R11 decision. Phase 3 reads the gate's verdict and picks the default.
+- **TOML config — read-only on plugin side.** Phase 2's `config.mjs` is **read-only**: parses `~/.codex/config.toml` for the small set of keys the plugin uses (`model`, `model_reasoning_effort`) via a minimal regex-based reader. The plugin never writes the config — opencode writes JSON; codex would need TOML write + comment preservation which is out of scope. If a future codex plan adds config writes, it would need to choose either a TOML library (workspace's first npm dep — currently dep-free) or restrict to append-only edits. **Not a risk for plan-007.**
+- **Backward compatibility for `codex:codex-rescue`.** The CLAUDE.md references this subagent name. Plan-007 keeps the name via the literal-copy alias mechanism (R6) — `agents/codex-rescue.md` is the same body as `agents/codex-review.md` with the file-level `name:` field changed. After publish, gradually migrate CLAUDE.md text + reviewer-dispatch prompts to `codex-review` for terminology consistency with `opencode:opencode-review`.
 
 ## Plan Review (4-way)
 
@@ -332,7 +361,34 @@ If both plugins are installed simultaneously, Claude Code's plugin resolver will
 | R11 | GLM + DeepSeek-Pro | **Sandbox semantic gap.** opencode's "honors permission prompts" default is more conservative than codex's `workspace-write` (which may be silent-allow). | Phase 1.5 verifies. If `workspace-write` is silent-allow, **`/codex:run` default becomes `--sandbox read-only`** and users must pass `--yolo` (→ `danger-full-access`) for any write capability. This restores the "user must consent before writes" property. Document in CHANGELOG. |
 | R12 | Self-Opus | **Phase 1 missing actual hook scripts.** Plan creates `hooks/hooks.json` (manifest) but not the script files. Phase 7's "fail-open already in Phase 1" claim is wrong. | Phase 1 creates `hooks/session-start.mjs` + `hooks/session-end.mjs` (ports from opencode/hooks/) with fail-open ESM ordering from day 1 (carrying plan-006 Phase 4 forward). Stop-hook script lands in Phase 5 with the gate command. |
 
-### Round 2 (post-revision) verdicts — TBD after revision commit
+### Round 2 (HEAD `bc30b9c`) — 4-of-4 ⚠️ needs-attention again
+
+| # | Reviewer | Verdict |
+|---|---|---|
+| 1 | Self-Opus 4.7 | ⚠️ needs-attention (confirms all 4 cross-section contradictions) |
+| 2 | Codex | ⚠️ needs-attention — 3 round-1 STILL OPEN + 1 new blocker N1 + 2 minor |
+| 3 | DeepSeek V4 Pro | ⚠️ needs-attention — all 12 round-1 RESOLVED, but 1 new blocker NEW-1 + 3 minor |
+| 4 | GLM 5.1 | ⚠️ needs-attention — all 12 round-1 RESOLVED, but 2 new blockers + 2 minor |
+
+Round-1 status across reviewers: 12 / 12 RESOLVED per GLM + DeepSeek-Pro. Codex says 3 of his still open (E sandbox, I namespace, --json finding) — all due to **stale top-level sections that contradict the per-phase revisions**. This is a coherence problem, not a design problem: I added new conditional content per phase but left contradictory unconditional language in the upfront sections.
+
+### Consolidated round-2 \[OPEN\] blockers
+
+| # | Source(s) | Issue | Fix |
+|---|---|---|---|
+| RR1 | Codex N1, GLM N2 | "Mapping decisions" section sandbox default still says `workspace-write` unconditionally; R11 made this conditional on Phase 1.5 gate R9-d. Implementers reading first will get the wrong default. | Rewrite the sandbox bullet in "Mapping decisions" to reference R11's conditional logic. |
+| RR2 | Codex (--json finding) | "Mapping decisions" says `/codex:review` uses `codex review --base <ref> [PROMPT]` — but Phase 2 says `codex exec --json` is used for ALL parseable runs. | Rewrite the review-dispatch bullet to say `codex exec --json` is used (with prompt template); `codex review` subcommand is not on the invoke path. |
+| RR3 | Codex (I still-open) | "Migration story for users" still asserts "Claude Code's plugin resolver will prefer the most-recently-installed (last-one-wins)" as fact, even though Phase 1.5 gate 5 marks this as TO-BE-VERIFIED and R7 made the migration guide conservative (uninstall-first). | Rewrite the migration-story note to say Phase 1.5 verifies the behavior; conservative uninstall-first stays as canonical instruction regardless. |
+| RR4 | Codex N3 | "Migration story" lists session continuity as a v0.5.1 feature unconditionally even though Phase 4 makes it conditional on R9-b/c gate. | Add conditional language: "session continuity (if Phase 1.5 gates R9-b/c pass — otherwise: descoped to fresh-session-only)." |
+| RR5 | Codex N2, GLM N3 | "Risks + open questions" frames `config.mjs` Phase-2 work as needing TOML write/comment preservation, but Phase 2 settled on read-only. The risks bullet is stale. | Remove the TOML-write risk bullet OR reframe as "future consideration if config writes are added in a later plan." |
+| RR6 | GLM N1 | **`lib/pid-identity.mjs` has no creation phase.** Referenced in Phase 1 hooks notes, Phase 7 verification checklist ("carried in Phase 3"), and the byte-identical file table — but appears in NO phase's file-creation list. Will silently not exist when implementation runs. | Add `lib/pid-identity.mjs` to Phase 3's file list (alongside `jobs.mjs` and `supervisor.mjs` which depend on it). |
+| RR7 | GLM N4 | Phase 1.5 gate 5 tries to invoke `/codex:setup` but Phase 1 only creates stubs — no working setup body exists until Phase 2. The gate can't actually run. | Revise gate 5: test namespace collision via `/plugin list` (shows both plugin registrations) instead of invoking `/codex:setup`. |
+| RR8 | DeepSeek-Pro NEW-1 | Phase 5 declares "Depends on: Phase 2 + Phase 4" but if Phase 1.5 gate R9-b fails, **Phase 4 is fully descoped** (no review-dispatch.mjs, no sessions.mjs). Phase 5's Stop-hook gate imports from review-dispatch — cascading-descope gap. | Add a conditional descope note to Phase 5: if Phase 4 is fully descoped, the Stop-hook gate is also descoped (with a `gate.md` body that says "feature unavailable; codex lacks capturable session UUIDs"). `--style adversarial` survives because it only depends on Phase 2. |
+| RR9 | DeepSeek-Pro NEW-2 | `git.mjs` listed in Phase 3 with "may be byte-identical" speculation but not in the byte-identical table or Phase 8 sync-test scope. | Either add to byte-identical table (with a "verify during Phase 3" note) or drop the "may be" speculation from Phase 3 and treat as standard port. |
+| RR10 | DeepSeek-Pro NEW-3 | Migration step 4 parenthetical "(the marketplace is already registered if the user installed opencode this way)" — wrong; openai-codex and claudecode-buddy are separate marketplaces. | Replace with "register the claudecode-buddy marketplace with `/plugin marketplace add claudecode-buddy` if not already registered." |
+| RR11 | DeepSeek-Pro NEW-4 | Phase 1.5 says "results appended to this plan section" but no `### Phase 1.5 Results` subheader exists for the audit trail. | Add `### Phase 1.5 Results` subheader after the 5 gate descriptions. |
+
+### Round 3 (post-round-2-fix) verdicts — TBD
 
 ## Code Review (4-way — to be filled in after implementation)
 
