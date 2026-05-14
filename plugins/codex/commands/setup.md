@@ -4,18 +4,14 @@ argument-hint: ''
 allowed-tools: Bash(node:*)
 ---
 
-This command's body lands in Phase 2 (per `docs/plans/007-codex-plugin-parity.md`).
-
-Until Phase 2 lands, this is a stub:
-
-```bash
-echo "/codex:setup — stub. Phase 2 of plan-007 will fill the body."
-```
-
-After Phase 2:
+Run:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" setup
 ```
 
-Present the full command output to the user verbatim. Do not summarize. If the output indicates codex is not installed, do not auto-install — surface the install guidance from the script as-is. codex is distributed via `curl -fsSL https://codex.ai/install | bash` or `~/.codex/bin/codex` after running `codex update`; auto-installing would require executing a remote binary, which warrants explicit user consent.
+Present the full command output to the user verbatim. Do not summarize.
+
+If the output indicates codex is not installed, do not auto-install — surface the install guidance from the script as-is. codex is typically distributed via OpenAI's installer (or `npm install -g @openai/codex` depending on your distribution) and lands at `~/.codex/bin/codex`. Auto-installing would require downloading and executing a remote binary, which warrants explicit user consent rather than a one-line prompt.
+
+If the output indicates the config is missing or has no default `model =` field in `~/.codex/config.toml`, surface that to the user with the script's guidance line.
