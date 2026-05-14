@@ -1,0 +1,8 @@
+{
+  "name": "codex",
+  "version": "0.5.1",
+  "description": "Use codex from Claude Code to review code and delegate write-capable tasks with whichever model you have configured. Full v0.5.1 parity with the opencode plugin.",
+  "author": {
+    "name": "claudecode-buddy"
+  }
+}
