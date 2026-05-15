@@ -38,6 +38,7 @@ import { splitArgs } from "./lib/args.mjs";
 import { listModels } from "./lib/list-models.mjs";
 import { createJob, updateJob, listJobs, loadJob, jobsDir, jobPath, JOB_ID_RE } from "./lib/jobs.mjs";
 import { pidIsOurSupervisor as pidIsOurSupervisorExt } from "./lib/pid-identity.mjs";
+import { loadConfig, updateConfig } from "./lib/config.mjs";
 
 const VALID_SCOPES = new Set(["auto", "working-tree", "branch"]);
 const VALID_STYLES = new Set(["friendly", "adversarial"]);
@@ -854,6 +855,39 @@ function runCancel(rawArgs) {
   process.exit(0);
 }
 
+function runGate(rawArgs) {
+  const argv = rawArgs.flatMap((a) => splitArgs(a));
+  if (argv.length > 1) {
+    process.stderr.write(`gate accepts at most one argument (on|off|status); got: ${argv.join(" ")}\n`);
+    process.exit(2);
+  }
+  const action = (argv[0] ?? "status").toLowerCase();
+  const projectDir = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+
+  if (action === "status") {
+    const cfg = loadConfig(projectDir);
+    if (!cfg.ok) {
+      process.stderr.write(`${cfg.error}\n`);
+      process.exit(1);
+    }
+    process.stdout.write(`Stop-hook review gate: ${cfg.value.gate?.enabled ? "ON" : "OFF"}\n`);
+    process.exit(0);
+  }
+
+  if (action === "on" || action === "off") {
+    const r = updateConfig(projectDir, { gate: { enabled: action === "on" } });
+    if (!r.ok) {
+      process.stderr.write(`${r.error}\n`);
+      process.exit(1);
+    }
+    process.stdout.write(`Stop-hook review gate: ${action === "on" ? "ON" : "OFF"}\n`);
+    process.exit(0);
+  }
+
+  process.stderr.write(`unknown gate action: ${action}. Use: on, off, status.\n`);
+  process.exit(2);
+}
+
 const subcommand = process.argv[2];
 const rest = process.argv.slice(3);
 
@@ -891,6 +925,9 @@ switch (subcommand) {
     break;
   case "cancel":
     runCancel(rest);
+    break;
+  case "gate":
+    runGate(rest);
     break;
   default:
     if (subcommand === undefined) {
