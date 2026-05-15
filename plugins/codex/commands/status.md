@@ -4,8 +4,12 @@ argument-hint: ''
 allowed-tools: Bash(node:*)
 ---
 
-Stub body — implementation lands in Phase 3 of plan-007.
+Run:
 
 ```bash
-echo "/codex:status — stub. Phase 3 of plan-007 will implement this."
+node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" status
 ```
+
+Return the script's stdout verbatim. Each line: `<job-id>  <status>[ alive|dead]  <kind>  <model>  started=<iso>  elapsed=<human>  <summary>`.
+
+If output is `(no codex jobs)`, tell the user there are no jobs to display.

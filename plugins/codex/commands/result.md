@@ -4,8 +4,12 @@ argument-hint: '<job-id>'
 allowed-tools: Bash(node:*)
 ---
 
-Stub body — implementation lands in Phase 3 of plan-007.
+Run:
 
 ```bash
-echo "/codex:result — stub. Phase 3 of plan-007 will implement this."
+node "${CLAUDE_PLUGIN_ROOT}/scripts/buddy.mjs" result "$ARGUMENTS"
 ```
+
+Return the script's stdout verbatim. Output: a header (status, exit code, timestamps) followed by the parsed assistant text from `<id>.stdout` (NOT the raw NDJSON `<id>.events`).
+
+If output indicates the job is still running, suggest `/codex:status` to confirm liveness.
