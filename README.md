@@ -5,6 +5,7 @@ Claude Code plugins that wrap third-party coding/review CLIs so you can drive th
 Currently ships:
 
 - **[opencode](plugins/opencode/README.md)** — wraps the [opencode](https://opencode.ai) CLI. `/opencode:review` (with optional `--style adversarial`), write-capable `/opencode:run` (foreground or `--background`), session continuity per `(plan-or-branch, role, model)`, opt-in Stop-hook review gate.
+- **[codex](plugins/codex/README.md)** — wraps the [codex](https://github.com/openai/codex) CLI with full v0.5.1 parity to the opencode plugin. `/codex:review`, `/codex:run` (default sandbox `read-only`; `--yolo` → `workspace-write`), `/codex:rescue`, `/codex:status`/`result`/`cancel`, `/codex:gate`, session continuity via codex's UUID thread-ids. Replaces the third-party openai-codex plugin's `/codex:*` namespace.
 
 ## Install
 
@@ -17,9 +18,31 @@ In Claude Code, run:
 ```
 /plugin marketplace add mongmong/claudecode-buddy
 /plugin install opencode@claudecode-buddy
+/plugin install codex@claudecode-buddy   # optional; replaces openai-codex if installed
 ```
 
 Restart Claude Code.
+
+### Migrating from openai-codex (third-party) to claudecode-buddy/codex
+
+If you previously installed [openai-codex](https://github.com/openai/codex-plugin-cc)'s `/codex:*` commands and want to switch to the claudecode-buddy variant (which adds session continuity, fd-bound TOCTOU defenses, fail-open hooks, Stop-hook gate, `--variant` reasoning effort, `--style adversarial`, and the full opencode-plugin feature surface):
+
+1. **REQUIRED — uninstall openai-codex first** to avoid namespace collision:
+   ```
+   /plugin uninstall codex@openai-codex
+   ```
+2. **(Optional cleanup)** Remove the marketplace registration:
+   ```
+   /plugin marketplace remove openai-codex
+   ```
+3. **(Optional)** Recover any background-job output from openai-codex BEFORE uninstalling — `/codex:result <id>` against the OLD plugin. **openai-codex's persisted job and session state does NOT migrate** to claudecode-buddy/codex; the new plugin starts with fresh state under `<project>/.claudecode-buddy/codex/`.
+4. Install ours:
+   ```
+   /plugin install codex@claudecode-buddy
+   ```
+5. Restart Claude Code (or `/plugin marketplace update claudecode-buddy && /reload-plugins`).
+
+Same `/codex:review`, `/codex:run`, `/codex:rescue`, `codex:codex-rescue` (aliased to `codex-review`) commands work post-migration. New features become available — see `plugins/codex/CHANGELOG.md` for the v0.5.1 release notes.
 
 Equivalent if you prefer to hand-edit `~/.claude/settings.json`:
 

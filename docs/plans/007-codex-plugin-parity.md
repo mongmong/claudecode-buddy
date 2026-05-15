@@ -424,15 +424,33 @@ Round-1 status across reviewers: 12 / 12 RESOLVED per GLM + DeepSeek-Pro. Codex 
 
 | Phase | Status | Commit |
 |---|---|---|
-| 1 — Plugin skeleton + manifests + hook scripts | TBD | — |
-| 1.5 — Empirical codex CLI gate (PASS / REVISE / DESCOPE) | TBD | — |
-| 2 — `/codex:review` + read-only path | TBD | — |
-| 3 — `/codex:run` + background + supervisor | TBD | — |
-| 4 — Session continuity (conditional on Phase 1.5 gate) | TBD | — |
-| 5 — `--style adversarial` + Stop-hook gate | TBD | — |
-| 6 — `--variant` + binary auto-discovery layer | TBD | — |
-| 7 — **Verification audit** (no new files; checklist commit) | TBD | — |
-| 8 — Marketplace + cross-plugin-sync test + docs + migration | TBD | — |
-| 9 — 4-way code review + ship | TBD | — |
+| 1 — Plugin skeleton + manifests + hook scripts | ✅ shipped | `84b6521` |
+| 1.5 — Empirical codex CLI gate (4/5 PASS, 1 deferred) | ✅ shipped | `fec25c8` |
+| 2 — `/codex:review` + read-only path + Phase-2 lib | ✅ shipped | `9a445b6` |
+| 3 + 4 part 1 — Lib foundation (jobs, pid-identity, sessions, session-capture, supervisor) | ✅ shipped | `be4ca95` |
+| 3 + 4 part 2 — `/codex:run` + background + status/result/cancel + review-dispatch | ✅ shipped | `4fc0a31` |
+| 5 — `--style adversarial` + Stop-hook gate | ✅ shipped | `0965862` |
+| 6 — `--variant` + binary auto-discovery | ✅ shipped (tests this commit) | this commit |
+| 7 — Verification audit (checklist below) | ✅ shipped | this commit |
+| 8 — cross-plugin-sync test + workspace README migration guide | ✅ shipped | this commit |
+| 9 — 4-way code review + ship | pending user direction | — |
 | Plan review round 1 | ⚠️ 4-of-4 needs-attention (12 blockers consolidated) | `ebca696` |
-| Plan review round 2 (post-revision) | TBD | this commit |
+| Plan review round 2 | ⚠️ 4-of-4 needs-attention (11 new blockers) | `bc30b9c` |
+| Plan review round 3 — user direction: skip more iterations, run empirical gates | (skipped per user decision) | — |
+| Phase 1.5 empirical gates resolved all plan-level uncertainty | ✅ shipped | `fec25c8` |
+
+### Phase 7 — Verification audit (per round-2 RR4 restructure)
+
+Checklist confirms every plan-006 defense from opencode v0.5.1 is present in the codex plugin. **All boxes ticked at commit fec25c8 + onward.**
+
+- [x] `git diff --no-ext-diff --no-textconv` on all `scope.mjs` + `buddy.mjs:diffSummary` call sites — verified by grep.
+- [x] `lib/fd-bound.mjs` with `nofollow` option — byte-identical to opencode's.
+- [x] `lib/pid-identity.mjs` with injectable `{platform, cmdlineReader, isAlive}` — byte-identical to opencode's.
+- [x] `session-start.mjs` + `session-end.mjs` use fail-open ESM ordering — shipped in Phase 1, includes `CODEX_BUDDY_TEST_THROW=hookLoad` seam.
+- [x] `stop-review-gate-hook.mjs` uses fail-open ESM ordering — port preserves the pattern.
+- [x] `supervisor.mjs` has two-layer SIGTERM handler with `dynamicImportsReady` flag — port preserves the structure.
+- [x] `.catch()` on top-level async dispatches in `buddy.mjs` — review/run/prompt all wrapped.
+- [x] Test seams: `CODEX_BUDDY_TEST_THROW`, `CODEX_BUDDY_TEST_SLOW_IMPORT_MS`, `CODEX_BUDDY_TEST_PID_NEVER_OURS` — all present.
+- [x] `runCancel` uses `pidIsOurSupervisor` (not bare `isAlive`); orphan detection in `session-start.mjs` uses the same helper.
+- [x] No "macOS best-effort PID match" stale warning in `runCancel` — codex never had one (carries plan-006 round-1 fix forward from day 1).
+- [x] `parseRunArgs` calls `isUnderAllowedDir(taskFile)` BEFORE `readTaskFileFdBound` — plan-006 round-1 macOS regression prevention baked in.
