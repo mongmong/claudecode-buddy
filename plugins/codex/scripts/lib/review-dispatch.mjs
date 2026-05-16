@@ -9,7 +9,7 @@
 //      - Fresh: `codex exec --json --sandbox <mode> -C <cwd> [...flags] <prompt>`
 //      - Resume: `codex exec resume --json --skip-git-repo-check <UUID> [...flags] <prompt>`
 //      Per Phase 1.5 gate 3 caveat, `--sandbox` is NOT accepted on `resume`;
-//      sandbox flows through `-c sandbox.mode=<mode>` config override.
+//      sandbox flows through `-c sandbox_mode=<mode>` config override.
 //   6. Invoke.
 //   7. Stale-session backup detection ("Session not found: <UUID>" in stderr) — retry fresh.
 //   8. Capture thread_id from first-line thread.started in stdout (Phase 1.5 gate 2).
@@ -41,11 +41,11 @@ function buildFreshArgs({ cwd, sandbox, model, variant, prompt }) {
 
 // Build codex argv for resume. Per Phase 1.5 gate 3:
 //   `codex exec resume <UUID> [PROMPT]` accepts positional prompt.
-//   `--sandbox` flag IS NOT accepted on resume; use `-c sandbox.mode=<mode>`.
+//   `--sandbox` flag IS NOT accepted on resume; use `-c sandbox_mode=<mode>`.
 function buildResumeArgs({ uuid, sandbox, model, variant, prompt }) {
   const args = ["exec", "resume", "--json", "--skip-git-repo-check"];
   // Sandbox config flows through -c for resume (the --sandbox flag is rejected).
-  args.push("-c", `sandbox.mode=${sandbox}`);
+  args.push("-c", `sandbox_mode=${sandbox}`);
   if (model) args.push("--model", model);
   if (variant) args.push("-c", `model_reasoning_effort=${variant}`);
   args.push(uuid, prompt);

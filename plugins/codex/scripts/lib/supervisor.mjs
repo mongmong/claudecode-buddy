@@ -70,7 +70,7 @@ function inlineLockDir() {
   return joinPath(
     projectDir,
     ".claudecode-buddy",
-    "opencode",
+    "codex",
     "sessions",
     `${inlineSanitise(sessionKey)}-${inlineSanitise(role)}-${inlineSanitise(model)}.lock`,
   );

@@ -27,15 +27,15 @@ Restart Claude Code.
 
 If you previously installed [openai-codex](https://github.com/openai/codex-plugin-cc)'s `/codex:*` commands and want to switch to the claudecode-buddy variant (which adds session continuity, fd-bound TOCTOU defenses, fail-open hooks, Stop-hook gate, `--variant` reasoning effort, `--style adversarial`, and the full opencode-plugin feature surface):
 
-1. **REQUIRED — uninstall openai-codex first** to avoid namespace collision:
+1. **(Optional, BEFORE uninstall)** Recover any background-job output from openai-codex while it's still installed: `/codex:result <id>` against the OLD plugin. The openai-codex plugin's own job/UUID-mapping table does NOT migrate to claudecode-buddy/codex (the new plugin starts with fresh job state under `<project>/.claudecode-buddy/codex/`). The underlying codex CLI session files under `~/.codex/sessions/` survive across plugins, so codex-side history is preserved — only the plugin's wrapper state resets.
+2. **REQUIRED — uninstall openai-codex** to avoid namespace collision:
    ```
    /plugin uninstall codex@openai-codex
    ```
-2. **(Optional cleanup)** Remove the marketplace registration:
+3. **(Optional cleanup)** Remove the marketplace registration:
    ```
    /plugin marketplace remove openai-codex
    ```
-3. **(Optional)** Recover any background-job output from openai-codex BEFORE uninstalling — `/codex:result <id>` against the OLD plugin. **openai-codex's persisted job and session state does NOT migrate** to claudecode-buddy/codex; the new plugin starts with fresh state under `<project>/.claudecode-buddy/codex/`.
 4. Install ours:
    ```
    /plugin install codex@claudecode-buddy

@@ -59,7 +59,7 @@ export function sessionFilePath(projectDir, key, role, model) {
   return join(
     projectDir,
     ".claudecode-buddy",
-    "opencode",
+    "codex",
     "sessions",
     `${safeKey}-${safeRole}-${safeModel}.session-id`,
   );
@@ -157,7 +157,7 @@ export function acquireSessionLock(projectDir, key, role, model) {
       return {
         ok: false,
         error:
-          `locked: another opencode dispatch holds the session lock at ${path}. ` +
+          `locked: another codex dispatch holds the session lock at ${path}. ` +
           `If no dispatch is actually running (previous process crashed), remove ` +
           `the lock manually with: rm -rf "${path}"`,
       };

@@ -55,16 +55,23 @@ export function verifySessionExists(_binary, threadId) {
   if (!THREAD_ID_RE.test(threadId)) {
     return { ok: false, error: `invalid thread_id format: ${threadId}` };
   }
-  const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
-  const candidatePaths = [
-    join(codexHome, "sessions", `${threadId}.jsonl`),
-    // Also check archived_sessions; codex moves old ones there.
-    join(codexHome, "archived_sessions", `${threadId}.jsonl`),
-  ];
-  for (const p of candidatePaths) {
-    if (existsSync(p)) return { ok: true, exists: true };
-  }
-  return { ok: true, exists: false };
+  // Round-1 code-review fix (Codex caught): codex actually stores sessions
+  // at date-partitioned paths like:
+  //   ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<UUID>.jsonl
+  // NOT the flat `~/.codex/sessions/<UUID>.jsonl` layout the prior
+  // implementation checked. Rather than implementing a recursive
+  // date-partition glob (which would slow down every dispatch as session
+  // history grows), we trust the stored UUID at pre-flight and let codex
+  // itself report `Session not found: <UUID>` to stderr if the resume
+  // target was garbage-collected. The supervisor + review-dispatch already
+  // handle this case via staleSessionInStderr.
+  //
+  // Returning { ok: true, exists: true } means callers skip the pre-flight
+  // delete + fall through to the stale-detection backup. Net effect: one
+  // extra codex invocation on the rare stale case (which already gets
+  // detected and recovered from), vs. expensive filesystem walks on every
+  // healthy dispatch.
+  return { ok: true, exists: true };
 }
 
 // Codex has no equivalent of opencode's `session list --cwd <dir>` for

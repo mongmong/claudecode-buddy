@@ -671,7 +671,7 @@ function runRunBackground(args, cwd, projectDir, cli) {
   if (resumeId !== null) {
     codexArgs = [
       "exec", "resume", "--json", "--skip-git-repo-check",
-      "-c", `sandbox.mode=${args.sandbox}`,
+      "-c", `sandbox_mode=${args.sandbox}`,
     ];
     if (args.model) codexArgs.push("--model", args.model);
     if (args.variant) codexArgs.push("-c", `model_reasoning_effort=${args.variant}`);

@@ -51,7 +51,7 @@ Both CLIs wrap an LLM. The dispatch shape is structurally the same (spawn → ca
 - `--yolo` translates to `--dangerously-bypass-approvals-and-sandbox` (maps to `--sandbox danger-full-access`).
 - **Default sandbox (per Phase 1.5 gate 4 — silent-allow confirmed):** `/codex:run` default is `--sandbox read-only`. `--yolo` maps to `--sandbox workspace-write` (cwd-confined writes). Users can override to `danger-full-access` explicitly via `--sandbox danger-full-access` (no shorthand). `/codex:review` always uses `--sandbox read-only`. Preserves opencode's "user consent before writes" property.
 - `--variant <level>` translates to `-c model_reasoning_effort=<level>`. Free-form pass-through (codex validates the value; plugin doesn't).
-- **Session continuity (per Phase 1.5 gates 2 + 3 — both PASS):** `thread.started` event's `thread_id` (UUID) captured from FIRST stdout line; stored in `<project>/.claudecode-buddy/codex/sessions/<key>-<role>-<model>.session-id`. Resume via `codex exec resume <UUID> [PROMPT]` with sandbox flag passed as `-c sandbox.mode=<mode>` (top-level `--sandbox` flag NOT accepted by `resume` subcommand).
+- **Session continuity (per Phase 1.5 gates 2 + 3 — both PASS):** `thread.started` event's `thread_id` (UUID) captured from FIRST stdout line; stored in `<project>/.claudecode-buddy/codex/sessions/<key>-<role>-<model>.session-id`. Resume via `codex exec resume <UUID> [PROMPT]` with sandbox flag passed as `-c sandbox_mode=<mode>` (top-level `--sandbox` flag NOT accepted by `resume` subcommand).
 - Binary auto-discovery: scan `~/.codex/bin/codex` first, then `~/.local/bin/codex`, `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`, `/usr/bin/codex`. Same `accessSync(X_OK)` gating.
 
 ## Code-sharing strategy
@@ -166,7 +166,7 @@ Additional event types (`file_change`, `command_execution`, etc.) appear for wri
 The `thread.started` event is emitted as the **FIRST stdout line** with a UUID `thread_id`. No stderr regex needed (cleaner than opencode's `service=session id=ses_*` stderr pattern). Plugin's session-capture: parse the first NDJSON line, extract `thread_id`, persist to `<project>/.claudecode-buddy/codex/sessions/<key>-<role>-<model>.session-id`.
 
 **Gate (3) `codex exec resume <UUID> [PROMPT]` — ✅ PASS with caveat.**
-Tested: `codex exec resume --json --skip-git-repo-check <prior-uuid> "Reply: yes"`. Resume accepts positional prompt; model received and replied; `thread.started` event echoes the **same `thread_id`** confirming continuity. **Caveat:** `--sandbox` flag is NOT accepted on `resume` subcommand (`error: unexpected argument '--sandbox' found`). Workaround: use `-c sandbox.mode=<mode>` (codex config override flag) to flow sandbox config through resume. Plugin's `review-dispatch.mjs` accommodates: top-level exec uses `--sandbox`; resume uses `-c sandbox.mode=...`.
+Tested: `codex exec resume --json --skip-git-repo-check <prior-uuid> "Reply: yes"`. Resume accepts positional prompt; model received and replied; `thread.started` event echoes the **same `thread_id`** confirming continuity. **Caveat:** `--sandbox` flag is NOT accepted on `resume` subcommand (`error: unexpected argument '--sandbox' found`). Workaround: use `-c sandbox_mode=<mode>` (codex config override flag) to flow sandbox config through resume. Plugin's `review-dispatch.mjs` accommodates: top-level exec uses `--sandbox`; resume uses `-c sandbox_mode=...`.
 
 **Gate (4) `--sandbox workspace-write` write behavior — ✅ PASS with R11 decision.**
 Tested: `codex exec --json --sandbox workspace-write "write 'test' to gate4-test.txt"`. **Result: silent-allow** — file written immediately, no prompt, no approval step. Codex `workspace-write` is more permissive than opencode's "honors permission prompts" default.
@@ -180,7 +180,7 @@ Requires Claude Code interaction (install both plugins, observe `/plugin list`).
 **4 of 5 gates PASS, 1 deferred (non-blocking).** Plan-007 proceeds with the full v0.5.1-parity scope. **No descopes triggered.** Specific plan implications now grounded in reality:
 - Phase 2's `lib/invoke.mjs` parses `item.completed` events with nested `agent_message` text.
 - Phase 2's session-capture path is the first-line `thread.started` UUID extraction (simpler than the planned stderr-or-output-last-message scan).
-- Phase 4's session resume is `codex exec resume <UUID> [PROMPT]` with sandbox via `-c sandbox.mode=...`.
+- Phase 4's session resume is `codex exec resume <UUID> [PROMPT]` with sandbox via `-c sandbox_mode=...`.
 - Phase 3's `/codex:run` defaults to `--sandbox read-only`; `--yolo` → `workspace-write`.
 
 ### Phase 2 — `/codex:review` + `codex:codex-review` subagent + read-only path
@@ -234,7 +234,7 @@ Requires Claude Code interaction (install both plugins, observe `/plugin list`).
 **Files:**
 - `plugins/codex/scripts/lib/sessions.mjs` — **NOT byte-identical** to opencode's (R1: `SESSION_ID_RE` is UUID `/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i` vs `ses_*`; path hardcodes `"codex"`). Otherwise identical body.
 - `plugins/codex/scripts/lib/session-capture.mjs` — extract the first stdout NDJSON line, parse JSON, return `event.thread_id` if `event.type === "thread.started"` (per Phase 1.5 gate 2 finding).
-- `plugins/codex/scripts/lib/review-dispatch.mjs` — resume-invocation is `codex exec resume <UUID> [PROMPT]`. Sandbox config flows through `-c sandbox.mode=<mode>` not `--sandbox` (per Phase 1.5 gate 3 caveat).
+- `plugins/codex/scripts/lib/review-dispatch.mjs` — resume-invocation is `codex exec resume <UUID> [PROMPT]`. Sandbox config flows through `-c sandbox_mode=<mode>` not `--sandbox` (per Phase 1.5 gate 3 caveat).
 - Update: `commands/{review,run}.md` to wire `--session-key`, `--reset`, `--no-session`.
 
 ### Phase 5 — `--style adversarial` + Stop-hook gate
