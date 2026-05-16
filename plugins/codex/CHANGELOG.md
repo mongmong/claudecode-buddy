@@ -36,6 +36,12 @@ Pre-implementation Phase 1.5 empirically verified 5 codex CLI assumptions:
 - All plan-006 critical-path safety defenses carried forward from day 1: `git diff --no-ext-diff` (closes RCE H1), fd-bound `--prompt-file`/`--task-file` (closes H2/M1 TOCTOU on Linux), two-layer SIGTERM in supervisor (closes H3), `pid-identity` injectable cmdline reader for macOS (closes C2/M2), `.catch` on top-level dispatches (closes C1), fail-open ESM ordering in hooks (closes H4), path-based containment FIRST on `--task-file` (round-1 macOS regression prevention).
 - Test seams (parity with opencode's): `CODEX_BUDDY_TEST_THROW`, `CODEX_BUDDY_TEST_SLOW_IMPORT_MS`, `CODEX_BUDDY_TEST_PID_NEVER_OURS`.
 
+### Known limitations (parity with opencode)
+
+- **Background-job resume on stale session-id fails the job (foreground retries fresh).** When a background `/codex:run` resumes a previously-captured thread UUID that codex has since garbage-collected, the supervisor detects the staleness via the `Session not found: <UUID>` stderr pattern, deletes the stored UUID (so the NEXT dispatch starts fresh), and reports the job as failed. It does NOT retry-fresh within the same dispatch. The foreground review/run path goes through `lib/review-dispatch.mjs` which DOES retry fresh on stale-session detection — so the two paths have asymmetric stale-handling behavior. This is parity with opencode's supervisor (same code shape, same limitation). Fixing the asymmetry symmetrically across both plugins is queued for a future plan (likely the eventual codex/opencode supervisor refactor that adds a retry-fresh loop). Caught during plan-007 round-1 code review by Codex.
+- All plan-006 deferred items inherited from opencode v0.5.1 (H5/H6/H7/H8, M3-M10, L1-L11) apply equally to codex — the codex supervisor has the same best-effort CAS, same lock-handoff window, same 33-site exit-0-on-failure pattern.
+- The macOS F_GETPATH-based fd-bound defense (queued for plan-009+ at opencode level) similarly applies to codex's `--prompt-file` / `--task-file` paths on macOS.
+
 ### Sandbox semantic decision (per Phase 1.5 gate 4)
 
 Codex's `--sandbox workspace-write` is silent-allow (no per-operation prompts). To preserve opencode's "user consent before writes" property:

@@ -409,6 +409,31 @@ Round-1 status across reviewers: 12 / 12 RESOLVED per GLM + DeepSeek-Pro. Codex 
 
 ### Round 3 (post-round-2-fix) verdicts — TBD
 
+## Code Review (round-1 + round-2 verdicts captured here)
+
+### Round 1 (HEAD `1e5b571`) — all 3 externals + self ⚠️ needs-attention
+
+5 [OPEN] items consolidated (per round-1 reviewer summaries):
+  B1 `sessions.mjs:62` + `supervisor.mjs:73` hardcoded "opencode" (DeepSeek + GLM + Codex)
+  B2 `sessions.mjs:160` error said "another opencode dispatch" (DeepSeek + GLM)
+  B3 `-c sandbox.mode=` → `sandbox_mode=` (Codex caught — codex config uses snake_case)
+  B4 `verifySessionExists` checked flat path; codex uses date-partitioned (Codex caught)
+  B5 `commands/rescue.md` still a stub (Codex caught)
+  B6 `README.md` migration step ordering (Codex + DeepSeek minor)
+
+### Round 2 (HEAD `6fe5160`) — 3-of-4 ✅ approve
+
+| # | Reviewer | Verdict |
+|---|---|---|
+| 1 | Self-Opus 4.7 | ✅ approve (all 5 blockers fixed) |
+| 2 | Codex | ⚠️ needs-attention — B3-new: background-resume no retry-fresh on stale UUID (B1/B2/B4/B5 all RESOLVED) |
+| 3 | DeepSeek V4 Flash | ✅ approve (all 6 RESOLVED, no new issues) |
+| 4 | GLM 5.1 | ✅ approve (all RESOLVED, no new issues) |
+
+**Codex's lone outstanding finding (B3-new):** The foreground review/run path goes through `lib/review-dispatch.mjs` which catches stale-session-on-resume via `staleSessionInStderr` and **retries fresh within the same dispatch**. The background path (`buddy.mjs:runRunBackground` → spawns supervisor with resume argv) handles staleness via the supervisor's close-handler: detects stale, deletes the stored UUID for next time, reports the job as failed. **No retry-fresh within the same background dispatch.** This is asymmetric with the foreground path.
+
+**Decision:** documented as a known limitation in `plugins/codex/CHANGELOG.md` under "Known limitations (parity with opencode)". The asymmetry is parity behavior with the opencode plugin's supervisor (same code shape, same close-handler logic). Fixing it symmetrically across both plugins requires the codex+opencode supervisor refactor that adds an in-dispatch retry-fresh loop — out of plan-007 scope (which is full v0.5.1 PARITY, not enhancement beyond parity). Queued for a future plan.
+
 ## Code Review (4-way — to be filled in after implementation)
 
 | # | Reviewer | Verdict |
