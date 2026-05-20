@@ -1,13 +1,17 @@
 # Project Instructions
 
-This workspace builds Claude Code plugins. The first plugin is `opencode` — a Claude Code wrapper around the [opencode](https://opencode.ai) CLI that exposes opencode as a review-only subagent and slash commands, mirroring the structure of OpenAI's `codex` plugin (`~/.claude/plugins/marketplaces/openai-codex/plugins/codex/`).
+This workspace builds Claude Code plugins. It currently ships two:
+- **`opencode`** — wraps the [opencode](https://opencode.ai) CLI.
+- **`codex`** — wraps the [codex](https://github.com/openai/codex) CLI; full v0.5.1 parity with the opencode plugin. Replaces the third-party openai-codex plugin's `/codex:*` namespace (shipped in plan-007).
+
+Both plugins expose the same surface: read-only review commands + subagents, write-capable run + background tasks, session continuity per `(plan-or-branch, role, model)` tuple, opt-in Stop-hook review gate.
 
 ## CRITICAL RULES (never skip)
 
 - **Use Claude Sonnet 4.6 by default; promote to Opus 4.7 for complex work.** Routine coding (new commands, runner tweaks, tests, refactors, doc edits) runs on Sonnet. Reach for Opus 4.7 (1M context) when you hit cross-cutting design, hard debugging, or large-codebase reasoning. Do not delegate code generation to Codex, DeepSeek, GLM, or any other external model — those are review-only. See "Coding Agent" below for the escalation policy.
 - **Always create the feature branch BEFORE drafting the plan.** Use `git checkout -b feature/plan-NNN-description` first. The plan file, review verdicts, and iterative revisions all commit to this branch — never to `main`. (The opencode session-continuity helper keys on `plan-NNN`-style branch names, so `feature/plan-NNN-*` is a precondition for reviewer session reuse.)
-- **Always run the 4-way plan review before any implementation.** After drafting or revising any plan in `docs/plans/`, dispatch ALL four reviewers in parallel (see "Plan review gate" below): Self-review (Opus 4.7), Codex (`codex:codex-rescue` subagent), DeepSeek V4 Pro (`opencode:opencode-review` subagent with `--model deepseek/deepseek-v4-pro`), and GLM 5.1 (`opencode:opencode-review` subagent with `--model volcengine-plan/glm-5.1`). Do NOT begin implementation until all four concur. Capture each verdict in the plan's `## Plan Review` section.
-- **Always run the 4-way code review** before merging a PR. Dispatch all four reviewers in parallel (see "Code Review" below): Self-review (Opus 4.7), Codex (`/codex:review`), DeepSeek V4 Flash (`opencode:opencode-review` subagent with `--model deepseek/deepseek-v4-flash`), and GLM 5.1 (`opencode:opencode-review` subagent with `--model volcengine-plan/glm-5.1`). Tag findings `[self-opus]`, `[codex]`, `[opencode:deepseek-v4-flash]`, `[opencode:glm-5.1]` in the plan's `## Code Review` section.
+- **Always run the 4-way plan review before any implementation.** After drafting or revising any plan in `docs/plans/`, dispatch ALL four reviewers in parallel (see "Plan review gate" below): Self-review (Opus 4.7), Codex (`codex:codex-review` subagent — `codex:codex-rescue` works as a legacy alias), DeepSeek V4 Pro (`opencode:opencode-review` subagent with `--model deepseek/deepseek-v4-pro`), and GLM 5.1 (`opencode:opencode-review` subagent with `--model volcengine-plan/glm-5.1`). Do NOT begin implementation until all four concur. Capture each verdict in the plan's `## Plan Review` section.
+- **Always run the 4-way code review** before merging a PR. Dispatch all four reviewers in parallel (see "Code Review" below): Self-review (Opus 4.7), Codex (`/codex:review` interactive or `codex:codex-review` subagent), DeepSeek V4 Flash (`opencode:opencode-review` subagent with `--model deepseek/deepseek-v4-flash`), and GLM 5.1 (`opencode:opencode-review` subagent with `--model volcengine-plan/glm-5.1`). Tag findings `[self-opus]`, `[codex]`, `[opencode:deepseek-v4-flash]`, `[opencode:glm-5.1]` in the plan's `## Code Review` section.
 - **Always write a post-execution report** in the plan file before shipping.
 - **Always run the full test suite** before pushing. Do not push with failing tests.
 
@@ -15,7 +19,7 @@ This workspace builds Claude Code plugins. The first plugin is `opencode` — a 
 
 This workspace is in early scaffolding. Expected layout as it grows:
 
-- `plugins/` — Claude Code plugins built here. The first one is `plugins/opencode/` — its layout mirrors `~/.claude/plugins/marketplaces/openai-codex/plugins/codex/` (which has `commands/`, `agents/`, `skills/`, `hooks/`, `prompts/`, `schemas/`, and `.claude-plugin/plugin.json`).
+- `plugins/` — Claude Code plugins built here. Currently: `plugins/opencode/` and `plugins/codex/`. Standard layout: `commands/`, `agents/`, `skills/`, `hooks/`, `prompts/`, `scripts/` (lib + buddy.mjs dispatcher), and `.claude-plugin/plugin.json`.
 - `.claude-plugin/marketplace.json` — Marketplace manifest (created when the first plugin is ready to publish).
 - `docs/` — Documentation
   - `docs/plans/` — Execution plans (numbered sequentially: 000, 001, ..., 100, 101, ...). Sub-documents use letter suffixes (e.g. 106a, 106b).
@@ -24,26 +28,29 @@ This workspace is in early scaffolding. Expected layout as it grows:
   - `docs/code-review.md` — Review process spec.
   - `docs/architecture/decisions.md` — Cross-cutting architectural decisions (created when the first decision is made).
 
-The reference codex plugin is the canonical example of a working Claude-Code-wraps-an-external-CLI plugin. Read it before designing layout for this workspace's plugins:
+The workspace's own `plugins/opencode/` and `plugins/codex/` are now the canonical examples of working Claude-Code-wraps-an-external-CLI plugins. Read them before designing layout for new plugins:
 
-- `~/.claude/plugins/marketplaces/openai-codex/plugins/codex/commands/*.md` — slash command definitions (review, rescue, status, result, cancel, setup, adversarial-review).
-- `~/.claude/plugins/marketplaces/openai-codex/plugins/codex/agents/codex-rescue.md` — subagent definition.
-- `~/.claude/plugins/marketplaces/openai-codex/plugins/codex/skills/codex-cli-runtime/SKILL.md` — internal helper contract for invoking the wrapped CLI.
-- `~/.claude/plugins/marketplaces/openai-codex/plugins/codex/.claude-plugin/plugin.json` — plugin manifest.
+- `plugins/opencode/commands/*.md` + `plugins/codex/commands/*.md` — slash command definitions (review, run, rescue, status, result, cancel, setup, gate).
+- `plugins/opencode/agents/*.md` + `plugins/codex/agents/*.md` — subagent definitions.
+- `plugins/opencode/skills/opencode-cli-runtime/SKILL.md` + `plugins/codex/skills/codex-cli-runtime/SKILL.md` — internal helper contracts for invoking the wrapped CLI.
+- `plugins/opencode/scripts/buddy.mjs` + `plugins/codex/scripts/buddy.mjs` — dispatcher entry points.
+- `plugins/*/.claude-plugin/plugin.json` — plugin manifests.
+
+Historical note: the [openai-codex](https://github.com/openai/codex-plugin-cc) third-party plugin (at `~/.claude/plugins/marketplaces/openai-codex/plugins/codex/`) was the original layout inspiration for plugin-000. Both opencode and the new codex plugin have evolved well beyond that baseline; the workspace's own plugins are the reference of record now.
 
 ## Architecture Decisions
 
 When this workspace accumulates cross-cutting decisions (plugin layout conventions, runner contracts, prompt templates, error-handling patterns, etc.), record them in `docs/architecture/decisions.md`. Read that file before making changes that touch shared plugin infrastructure. Update it when a plan introduces new decisions.
 
-Until the first decision lands, the only architectural rule is: **mirror the reference codex plugin's structure** unless a plan explicitly justifies departing from it.
+Until the first decision lands, the only architectural rule is: **mirror the existing plugins' structure** (opencode + codex are both canonical examples) unless a plan explicitly justifies departing from it.
 
 ## Coding Conventions
 
-The plugin runtime is shaped by what Claude Code expects: Markdown for command/agent/skill definitions, JSON for manifests and hook configs, and shell or TypeScript/Node for any runner scripts (the codex marketplace uses `package.json` + `tsconfig.app-server.json`). Match conventions in the reference codex plugin when designing the opencode plugin layout.
+The plugin runtime is shaped by what Claude Code expects: Markdown for command/agent/skill definitions, JSON for manifests and hook configs, Node ESM (`.mjs`) for runner scripts. Both `plugins/opencode/` and `plugins/codex/` use the same convention — dep-free Node + workspace-level `tests/<plugin>/*.test.mjs` via `node:test`. Match these conventions when adding a new plugin.
 
 ### General
 
-- Follow existing patterns in the reference codex plugin — check how similar features are implemented before writing new code.
+- Follow existing patterns in `plugins/opencode/` and `plugins/codex/` — check how similar features are implemented before writing new code.
 - Never hardcode secrets or credentials. Secrets go in `.env` (gitignored), non-secret config in plugin manifests or settings.json.
 - When modifying any logic, proactively search the codebase for similar patterns that should receive the same change. Do not wait to be asked — audit related commands, agents, and skills for consistency. If a fix applies to one slash command, check whether the others need it.
 - **Never defer fixes without a follow-up plan.** If a known issue is identified during implementation, fix it NOW in the same commit/PR. Do NOT label it "acceptable trade-off", "follow-up", "TODO", or "deferred" unless a concrete follow-up plan has been drafted in `docs/plans/` with a plan number, scope, and phases. Unfiled deferrals rot.
@@ -100,7 +107,7 @@ Every plan — new or revised — must pass a 4-way review before any code is wr
 | # | Reviewer | How to dispatch | Model |
 |---|----------|-----------------|-------|
 | 1 | **Self-review (Opus 4.7)** | Claude reads its own plan critically on Opus and lists concerns inline | claude-opus-4-7 |
-| 2 | **Codex** | `codex:codex-rescue` subagent with the plan path + review questions | Codex default |
+| 2 | **Codex** | `codex:codex-review` subagent with the plan path + review questions (or `codex:codex-rescue` — legacy alias) | Codex default |
 | 3 | **DeepSeek V4 Pro** | `opencode:opencode-review` subagent with `--model deepseek/deepseek-v4-pro` | deepseek/deepseek-v4-pro |
 | 4 | **GLM 5.1** | `opencode:opencode-review` subagent with `--model volcengine-plan/glm-5.1` | volcengine-plan/glm-5.1 |
 
@@ -109,7 +116,7 @@ Steps:
 1. **Create the feature branch FIRST** — `git checkout -b feature/plan-NNN-description` before any plan drafting. Every commit (the plan file, the review verdicts, the iterative revisions) lands on the feature branch, never on `main`. The opencode session-continuity helper keys on `plan-NNN`, so reviewer history scopes correctly when the branch matches `feature/plan-NNN-*`.
 2. **Draft or revise the plan** in `docs/plans/`. Commit it to the feature branch so the reviewers can read the same on-disk file Claude is iterating on.
 3. **Run self-review (Opus 4.7)** — Claude reads the plan with fresh eyes on Opus and records any concerns inline. Self-review ALWAYS runs on Opus, regardless of which tier wrote the plan (see "Coding Agent" → "Self-review always runs on Opus 4.7").
-4. **Dispatch reviewers 2-4 in parallel** — same focused prompt to each (plan path + explicit review questions: blockers, hidden assumptions, scope, ordering, missing risks). Keep each prompt under ~500 words and time-bounded. Use the `Agent` tool with `subagent_type: "codex:codex-rescue"` for Codex and `subagent_type: "opencode:opencode-review"` for the two opencode reviewers — the opencode subagent accepts the model pin in its prompt and forwards it to the underlying `--model` flag.
+4. **Dispatch reviewers 2-4 in parallel** — same focused prompt to each (plan path + explicit review questions: blockers, hidden assumptions, scope, ordering, missing risks). Keep each prompt under ~500 words and time-bounded. Use the `Agent` tool with `subagent_type: "codex:codex-review"` (or `codex:codex-rescue` as legacy alias) for Codex and `subagent_type: "opencode:opencode-review"` for the two opencode reviewers — both opencode-style subagents accept the model pin in their prompt and forward it to the underlying `--model` flag.
 5. **Capture all four verdicts** in the plan's `## Plan Review` section. Include the date, the reviewer name, the verdict, the blockers, and the resolution for each blocker. Commit the verdicts to the feature branch as they arrive — don't batch the audit trail.
 6. **If ANY reviewer flags blockers, revise the plan** to address them on the same feature branch. Re-dispatch only the flagging reviewer(s) on the revised plan. Iterate until all four concur.
 7. **Only then** begin implementation on the same branch. The plan file with the 4-way review summary is already committed; the next commits are the implementation.
@@ -210,7 +217,7 @@ Follow `docs/code-review.md` for the review process. Reviews use the same 4-way 
 | # | Reviewer | How to dispatch | Model |
 |---|----------|-----------------|-------|
 | 1 | **Self-review (Opus 4.7)** | Claude reads the diff critically on Opus before dispatching | claude-opus-4-7 |
-| 2 | **Codex** | `/codex:review` (interactive) or `codex:codex-rescue` subagent with branch diff + review questions | Codex default |
+| 2 | **Codex** | `/codex:review` (interactive) or `codex:codex-review` subagent with branch diff + review questions (`codex:codex-rescue` is a legacy alias of the same subagent) | Codex default |
 | 3 | **DeepSeek V4 Flash** | `opencode:opencode-review` subagent with `--model deepseek/deepseek-v4-flash` | deepseek/deepseek-v4-flash |
 | 4 | **GLM 5.1** | `opencode:opencode-review` subagent with `--model volcengine-plan/glm-5.1` | volcengine-plan/glm-5.1 |
 
@@ -220,7 +227,7 @@ Key points:
 - Reviewers: append findings with `[OPEN]` status and file:line references.
 - Authors: respond inline with `→ Response:` and `[FIXED]`/`[WONTFIX]`.
 - Tag findings `[self-opus]`, `[codex]`, `[opencode:deepseek-v4-flash]`, `[opencode:glm-5.1]` so the source is clear. All `[OPEN]` items from ANY of the four reviewers must be resolved before opening the PR.
-- Opencode invocations: dispatch `opencode:opencode-review` via the `Agent` tool TWICE in parallel (once per opencode model), each with prompt: "Code review the changes on this branch (run `git diff main...HEAD`). Focus on correctness, security, consistency with the reference codex plugin layout, and the rules in CLAUDE.md. Flag issues with file:line references and an [OPEN] tag." The orchestrator passes the appropriate `--model` flag in the bash heredoc the subagent runs (see the subagent doc for the heredoc + `--model` example).
+- Opencode invocations: dispatch `opencode:opencode-review` via the `Agent` tool TWICE in parallel (once per opencode model), each with prompt: "Code review the changes on this branch (run `git diff main...HEAD`). Focus on correctness, security, consistency with the existing `plugins/opencode/` and `plugins/codex/` layout, and the rules in CLAUDE.md. Flag issues with file:line references and an [OPEN] tag." The orchestrator passes the appropriate `--model` flag in the bash heredoc the subagent runs (see the subagent doc for the heredoc + `--model` example).
 - If ANY reviewer flags a blocker, fix it before merging. Re-dispatch only the flagging reviewer(s) to confirm the fix.
 
 ## Coding Agent
@@ -266,7 +273,8 @@ The **self-review stage** of both gates (plan review #1 and code review #1) ALWA
 Three external review models complement Claude's self-review. None of them implement code — they review only.
 
 ### Codex
-- Dispatch: `codex:codex-rescue` subagent (programmatic) or `/codex:review` (interactive code review).
+- Dispatch: `codex:codex-review` subagent (programmatic; `codex:codex-rescue` works as legacy alias) or `/codex:review` / `/codex:rescue` (interactive).
+- Plugin source: claudecode-buddy/codex (replaced the third-party openai-codex plugin's `/codex:*` namespace in plan-007). If both plugins are installed simultaneously the namespace collision is undefined — uninstall openai-codex first (see workspace README's "Migrating from openai-codex" section).
 - Use for: plan reviews, code reviews, spec reviews, post-impl reviews.
 - Prompt style: under 500 words, focused questions (blockers, hidden assumptions, scope, ordering, missing risks), time-bounded.
 
